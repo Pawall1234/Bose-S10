@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speaker
@@ -119,6 +120,7 @@ private sealed interface Screen {
     data object Setup : Screen
     data class Control(val speaker: Speaker) : Screen
     data class Stations(val speaker: Speaker) : Screen
+    data object Zentrale : Screen
 }
 
 @Composable
@@ -174,6 +176,7 @@ fun App() {
                     onRediscover = { rediscover() },
                     rediscovering = rediscovering,
                     onRemove = { speakers = store.remove(it) },
+                    onZentrale = { screen = Screen.Zentrale },
                 )
                 Screen.Setup -> SetupScreen(
                     onDone = { speaker ->
@@ -189,6 +192,7 @@ fun App() {
                     onStations = { screen = Screen.Stations(s.speaker) },
                 )
                 is Screen.Stations -> StationsScreen(s.speaker, onBack = { screen = Screen.Control(s.speaker) })
+                Screen.Zentrale -> ZentraleScreen(speakers, onBack = { screen = Screen.Home })
             }
         }
     }
@@ -250,6 +254,7 @@ private fun HomeScreen(
     onRemove: (Speaker) -> Unit,
     onRediscover: () -> Unit,
     rediscovering: Boolean,
+    onZentrale: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -289,6 +294,12 @@ private fun HomeScreen(
                 Spacer(Modifier.width(8.dp))
                 Text("Weiteren Lautsprecher einrichten")
             }
+        }
+
+        OutlinedButton(onClick = onZentrale, modifier = Modifier.fillMaxWidth().height(56.dp)) {
+            Icon(Icons.Filled.SettingsRemote, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Alexa-Zentrale")
         }
 
         FilledTonalButton(

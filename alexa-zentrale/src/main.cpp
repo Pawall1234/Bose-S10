@@ -61,6 +61,7 @@ static int speakerCount = 0;
 static unsigned long lastScan = 0;
 static volatile bool scanRequested = false;
 static String lastAlexa = "noch keiner";
+static bool scanningNow = false;
 static const unsigned long EMPTY_RESCAN_MS = 2UL * 60UL * 1000UL;  // solange nichts gefunden: alle 2 Minuten
 static const int EEPROM_SIZE = 512;
 
@@ -223,7 +224,9 @@ static void redirectHome() {
     stationServer.send(303, "text/plain", "");
 }
 
-static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist);
+static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist, const String& rawAlexa);
+static bool renameForAlexa(const String& name, const String& rawAlexa);
+static bool removeSpeaker(const String& name);
 
 static void handleAdd() {
     IPAddress ip;
@@ -232,7 +235,7 @@ static void handleAdd() {
         stationServer.send(400, "text/plain; charset=utf-8", "Bitte Name und gültige IP angeben.");
         return;
     }
-    addSpeaker(name, ip, true);
+    addSpeaker(name, ip, true, "");
     redirectHome();
 }
 
@@ -249,20 +252,99 @@ static void handleForget() {
     ESP.restart();
 }
 
+static const char* FIRMWARE_VERSION = "8";
+
+static String statusJson() {
+    String j = String("{\"version\":\"") + FIRMWARE_VERSION + "\",\"ip\":\"" + WiFi.localIP().toString() +
+        "\",\"lastAlexa\":\"" + jsonEscape(lastAlexa) + "\",\"scanning\":" + ((scanRequested || scanningNow) ? "true" : "false") +
+        ",\"speakers\":[";
+    for (int k = 0; k < speakerCount; k++) {
+        if (k) j += ",";
+        j += "{\"name\":\"" + jsonEscape(speakers[k].name) + "\",\"alexaName\":\"" + jsonEscape(speakers[k].alexaName) +
+            "\",\"ip\":\"" + speakers[k].ip.toString() + "\"}";
+    }
+    return j + "]}";
+}
+
+static void sendJson(int code, const String& body) {
+    stationServer.sendHeader("Cache-Control", "no-store");
+    stationServer.send(code, "application/json; charset=utf-8", body);
+}
+
+static void apiStatus() { sendJson(200, statusJson()); }
+
+static void apiScan() {
+    scanRequested = true;
+    sendJson(200, statusJson());
+}
+
+static void apiAdd() {
+    IPAddress ip;
+    String name = stationServer.arg("name");
+    if (!ip.fromString(stationServer.arg("ip")) || name.length() == 0) {
+        sendJson(400, "{\"error\":\"Name und IP angeben\"}");
+        return;
+    }
+    addSpeaker(name, ip, true, stationServer.arg("alexa"));
+    sendJson(200, statusJson());
+}
+
+static void apiRename() {
+    if (!renameForAlexa(stationServer.arg("name"), stationServer.arg("alexa"))) {
+        sendJson(400, "{\"error\":\"Lautsprecher nicht gefunden\"}");
+        return;
+    }
+    sendJson(200, statusJson());
+}
+
+static void apiRemove() {
+    if (!removeSpeaker(stationServer.arg("name"))) {
+        sendJson(400, "{\"error\":\"Lautsprecher nicht gefunden\"}");
+        return;
+    }
+    sendJson(200, statusJson());
+    delay(300);
+    ESP.restart();
+}
+
 // ------------------------------------------------------------------ Lautsprecher finden
 
 // Gespeicherte Lautsprecher im Flash: "Name|IP\n..." (nur Raumname und Heimnetz-Adresse).
 static void saveSpeakers() {
     String data = "ST1\n";
-    for (int k = 0; k < speakerCount; k++) data += speakers[k].name + "|" + speakers[k].ip.toString() + "\n";
+    for (int k = 0; k < speakerCount; k++) {
+        data += speakers[k].name + "|" + speakers[k].ip.toString() + "|" + speakers[k].alexaName + "\n";
+    }
     for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, i < (int)data.length() ? data[i] : 0);
     EEPROM.commit();
 }
 
-static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist = true) {
-    String name = rawName;
-    name.trim();
-    name.replace("|", " ");
+static String cleanName(String n) {
+    n.trim();
+    n.replace("|", " ");
+    n.replace("\n", " ");
+    n.replace("<", "");
+    n.replace(">", "");
+    n.replace("\"", "");
+    if (n.length() > 40) n = n.substring(0, 40);
+    return n;
+}
+
+// Eigene Geräte-Kennung aus dem Alexa-Namen ableiten. Die Standard-Kennung hängt nur an der Reihenfolge,
+// dann hält Alexa einen umbenannten Lautsprecher für ein schon bekanntes Gerät und zeigt ihn nicht neu an.
+static void applyUniqueId(int k) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < speakers[k].alexaName.length(); i++) {
+        h = (h ^ (uint8_t)speakers[k].alexaName[i]) * 16777619u;
+    }
+    char uid[32];
+    snprintf(uid, sizeof(uid), "%02X:%s:%02X:%02X", (unsigned)(h & 0xFF), WiFi.macAddress().c_str(),
+             (unsigned)((h >> 8) & 0xFF), (unsigned)((h >> 16) & 0xFF));
+    fauxmo.setDeviceUniqueId(speakers[k].fauxmoId, uid);
+}
+
+static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist = true, const String& rawAlexa = "") {
+    String name = cleanName(rawName);
     if (name.length() == 0) return;
     for (int k = 0; k < speakerCount; k++) {
         if (speakers[k].name.equalsIgnoreCase(name)) {
@@ -274,27 +356,53 @@ static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist 
         }
     }
     if (speakerCount >= MAX_SPEAKERS) return;
-    speakers[speakerCount].name = name;
-    speakers[speakerCount].ip = ip;
-    // Für Alexa "Radio" anhängen, damit der Name nicht mit einer Alexa-Gruppe (z. B. "Küche") kollidiert.
-    speakers[speakerCount].alexaName = name;
-    if (name.indexOf("adio") < 0) speakers[speakerCount].alexaName += " Radio";
-    speakers[speakerCount].fauxmoId = fauxmo.addDevice(speakers[speakerCount].alexaName.c_str());
-    // Eigene Geräte-Kennung aus dem Namen ableiten. Die Standard-Kennung hängt nur an der Reihenfolge,
-    // dann hält Alexa einen umbenannten Lautsprecher für ein schon bekanntes Gerät und zeigt ihn nicht neu an.
-    {
-        uint32_t h = 2166136261u;
-        for (size_t i = 0; i < speakers[speakerCount].alexaName.length(); i++) {
-            h = (h ^ (uint8_t)speakers[speakerCount].alexaName[i]) * 16777619u;
-        }
-        char uid[32];
-        snprintf(uid, sizeof(uid), "%02X:%s:%02X:%02X", (unsigned)(h & 0xFF), WiFi.macAddress().c_str(),
-                 (unsigned)((h >> 8) & 0xFF), (unsigned)((h >> 16) & 0xFF));
-        fauxmo.setDeviceUniqueId(speakers[speakerCount].fauxmoId, uid);
+    int k = speakerCount;
+    speakers[k].name = name;
+    speakers[k].ip = ip;
+    // Standard für Alexa: "Radio" anhängen, damit der Name nicht mit einer Alexa-Gruppe (z. B. "Küche") kollidiert.
+    String alexa = cleanName(rawAlexa);
+    if (alexa.length() == 0) {
+        alexa = name;
+        if (name.indexOf("adio") < 0) alexa += " Radio";
     }
+    speakers[k].alexaName = alexa;
+    speakers[k].fauxmoId = fauxmo.addDevice(speakers[k].alexaName.c_str());
+    applyUniqueId(k);
     speakerCount++;
     Serial.printf("  neu: %s -> %s\n", name.c_str(), ip.toString().c_str());
     if (persist) saveSpeakers();
+}
+
+static int speakerIndexByName(const String& name) {
+    for (int k = 0; k < speakerCount; k++) {
+        if (speakers[k].name.equalsIgnoreCase(name)) return k;
+    }
+    return -1;
+}
+
+static bool renameForAlexa(const String& name, const String& rawAlexa) {
+    int k = speakerIndexByName(name);
+    String alexa = cleanName(rawAlexa);
+    if (k < 0 || alexa.length() == 0) return false;
+    speakers[k].alexaName = alexa;
+    fauxmo.renameDevice(speakers[k].fauxmoId, speakers[k].alexaName.c_str());
+    applyUniqueId(k);
+    saveSpeakers();
+    return true;
+}
+
+// Entfernen verschiebt die Nummern in der Hue-Emulation, deshalb speichern und neu starten.
+static bool removeSpeaker(const String& name) {
+    int k = speakerIndexByName(name);
+    if (k < 0) return false;
+    for (int i = k; i < speakerCount - 1; i++) {
+        speakers[i].name = speakers[i + 1].name;
+        speakers[i].ip = speakers[i + 1].ip;
+        speakers[i].alexaName = speakers[i + 1].alexaName;
+    }
+    speakerCount--;
+    saveSpeakers();
+    return true;
 }
 
 static void loadSpeakers() {
@@ -311,8 +419,11 @@ static void loadSpeakers() {
         if (nl < 0) nl = data.length();
         String line = data.substring(pos, nl);
         int bar = line.indexOf('|');
+        int bar2 = bar > 0 ? line.indexOf('|', bar + 1) : -1;
         IPAddress ip;
-        if (bar > 0 && ip.fromString(line.substring(bar + 1))) addSpeaker(line.substring(0, bar), ip, false);
+        String ipText = bar2 > 0 ? line.substring(bar + 1, bar2) : line.substring(bar + 1);
+        String alexa = bar2 > 0 ? line.substring(bar2 + 1) : "";
+        if (bar > 0 && ip.fromString(ipText)) addSpeaker(line.substring(0, bar), ip, false, alexa);
         pos = nl + 1;
     }
     Serial.printf("%d Lautsprecher aus dem Speicher geladen\n", speakerCount);
@@ -360,6 +471,7 @@ static int scanSubnet() {
         c.stop();
         if (open && probeSpeaker(ip)) ok++;
         fauxmo.handle();
+        stationServer.handleClient();  // App und Statusseite bleiben während der Suche erreichbar
         yield();
     }
     Serial.printf("Netzsuche fertig, %d Lautsprecher\n", ok);
@@ -367,9 +479,11 @@ static int scanSubnet() {
 }
 
 static void scanSpeakers(bool full) {
+    scanningNow = true;
     int found = scanMdns();
     if (found == 0 && (full || speakerCount == 0)) scanSubnet();
     lastScan = millis();
+    scanningNow = false;
 }
 
 static int speakerIndexForFauxmo(unsigned char deviceId) {
@@ -415,6 +529,11 @@ void setup() {
     stationServer.on("/add", handleAdd);
     stationServer.on("/scan", handleScan);
     stationServer.on("/forget", handleForget);
+    stationServer.on("/api/status", apiStatus);
+    stationServer.on("/api/scan", apiScan);
+    stationServer.on("/api/add", apiAdd);
+    stationServer.on("/api/rename", apiRename);
+    stationServer.on("/api/remove", apiRemove);
     stationServer.begin();
     MDNS.addService("stzentrale", "tcp", STATION_PORT);  // damit die App die Zentrale findet
 
