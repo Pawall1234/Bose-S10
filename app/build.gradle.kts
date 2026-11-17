@@ -12,15 +12,25 @@ android {
         applicationId = "de.soundtouch.ersatz"
         minSdk = 29
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.4.0"
+        versionCode = 6
+        versionName = "0.4.1"
+    }
+
+    // Fester Signierschlüssel für den privaten Gebrauch. Nur mit immer demselben Schlüssel
+    // lassen sich neue Versionen über die alte App drüber installieren.
+    signingConfigs {
+        create("fixed") {
+            storeFile = file("release.keystore")
+            storePassword = "soundtouch"
+            keyAlias = "soundtouch"
+            keyPassword = "soundtouch"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Für den privaten Gebrauch mit dem Debug-Schlüssel signiert, damit die APK direkt installierbar ist.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("fixed")
         }
     }
     compileOptions {
