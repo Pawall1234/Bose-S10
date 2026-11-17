@@ -28,11 +28,11 @@ data class NowPlaying(
  */
 class SoundTouchApi(private val host: String, private val network: Network? = null) {
 
-    private fun open(path: String): HttpURLConnection {
+    private fun open(path: String, readTimeoutMs: Int = 10000): HttpURLConnection {
         val url = URL("http://$host:8090$path")
         val conn = (network?.openConnection(url) ?: url.openConnection()) as HttpURLConnection
-        conn.connectTimeout = 4000
-        conn.readTimeout = 10000
+        conn.connectTimeout = 5000
+        conn.readTimeout = readTimeoutMs
         return conn
     }
 
@@ -46,8 +46,8 @@ class SoundTouchApi(private val host: String, private val network: Network? = nu
         }
     }
 
-    suspend fun post(path: String, body: String): String = withContext(Dispatchers.IO) {
-        val conn = open(path)
+    suspend fun post(path: String, body: String, readTimeoutMs: Int = 10000): String = withContext(Dispatchers.IO) {
+        val conn = open(path, readTimeoutMs)
         try {
             conn.requestMethod = "POST"
             conn.doOutput = true
@@ -108,13 +108,26 @@ class SoundTouchApi(private val host: String, private val network: Network? = nu
         return Xml.allAttrs(xml, "ssid").filter { it.isNotBlank() }.distinct()
     }
 
-    /** Übergibt die Zugangsdaten des Heim-WLANs. Danach wechselt der Lautsprecher ins Heimnetz. */
+    /**
+     * Übergibt die Zugangsdaten des Heim-WLANs. Danach wechselt der Lautsprecher ins Heimnetz.
+     *
+     * Laut Community-Erfahrung hängt der erste Versuch oft, bis die Einrichtungs-Schnittstelle
+     * bereit ist; ein zweiter Versuch kurz danach klappt dann sofort. Deshalb bis zu drei Versuche.
+     */
     suspend fun addWirelessProfile(ssid: String, password: String, securityType: String = "wpa_or_wpa2") {
-        post(
-            "/addWirelessProfile",
-            "<AddWirelessProfile><profile ssid=\"${Xml.escape(ssid)}\" " +
-                "password=\"${Xml.escape(password)}\" securityType=\"$securityType\" /></AddWirelessProfile>",
-        )
+        val body = "<AddWirelessProfile><profile ssid=\"${Xml.escape(ssid)}\" " +
+            "password=\"${Xml.escape(password)}\" securityType=\"$securityType\" /></AddWirelessProfile>"
+        var last: Exception? = null
+        repeat(3) { attempt ->
+            try {
+                post("/addWirelessProfile", body, readTimeoutMs = 12000)
+                return
+            } catch (e: Exception) {
+                last = e
+                if (attempt < 2) kotlinx.coroutines.delay(2000)
+            }
+        }
+        throw last ?: IOException("unbekannter Fehler")
     }
 }
 

@@ -59,6 +59,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -226,6 +228,8 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
     var deviceType by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
     var result by remember { mutableStateOf<Speaker?>(null) }
+    var showPassword by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
 
     val permissions = if (Build.VERSION.SDK_INT >= 33) {
         arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES)
@@ -236,6 +240,7 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
     fun startConnect() {
         scope.launch {
             step = SetupStep.Connecting
+            error = ""
             val network = connector.connect()
             if (network == null) {
                 error = "Keine Verbindung zum Lautsprecher-WLAN. Leuchtet die WLAN-Anzeige orange? Dann noch einmal versuchen."
@@ -295,10 +300,19 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
                 OutlinedTextField(
                     password, { password = it },
                     label = { Text("WLAN-Passwort") },
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = {
+                        clipboard.getText()?.text?.trim()?.let { if (it.isNotEmpty()) password = it }
+                    }) { Text("Passwort einfügen") }
+                    TextButton(onClick = { showPassword = !showPassword }) {
+                        Text(if (showPassword) "Verbergen" else "Anzeigen")
+                    }
+                }
+                if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
                 Text(
                     "Hinweis: Der SoundTouch 10 nutzt vermutlich nur 2,4 GHz. Das WLAN muss im Router auf 2,4 GHz verfügbar sein.",
                     style = MaterialTheme.typography.bodySmall,
@@ -309,15 +323,21 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
                     onClick = {
                         scope.launch {
                             step = SetupStep.Sending
+                            error = ""
                             val a = api ?: return@launch
-                            if (speakerName.isNotBlank()) runCatching { a.setName(speakerName.trim()) }
                             val sent = runCatching { a.addWirelessProfile(ssid.trim(), password) }
-                            password = ""
                             if (sent.isFailure) {
-                                error = "Der Lautsprecher hat die WLAN-Daten nicht angenommen: ${sent.exceptionOrNull()?.message}"
-                                step = SetupStep.Failed
-                                return@launch
+                                // Manchmal antwortet der Lautsprecher nicht mehr, weil er schon ins Heim-WLAN wechselt.
+                                // Ist er noch im Einrichtungs-WLAN erreichbar, hat er die Daten wirklich nicht angenommen.
+                                val stillInSetup = runCatching { a.info() }.isSuccess
+                                if (stillInSetup) {
+                                    error = "Der Lautsprecher hat die WLAN-Daten nicht angenommen (${sent.exceptionOrNull()?.message}). " +
+                                        "Bitte WLAN-Name und Passwort prüfen und noch einmal senden."
+                                    step = SetupStep.Credentials
+                                    return@launch
+                                }
                             }
+                            password = ""
                             connector.release()
                             step = SetupStep.Searching
                             delay(25_000)
@@ -331,6 +351,8 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
                                 }
                             }
                             result = found?.let { Speaker(wanted.ifBlank { it.name }, it.host) }
+                            // Namen erst im Heimnetz setzen, damit die Einrichtung nicht gestört wird.
+                            result?.let { r -> if (wanted.isNotBlank()) runCatching { SoundTouchApi(r.host).setName(wanted) } }
                             step = SetupStep.Done
                         }
                     },
