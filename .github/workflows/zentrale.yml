@@ -25,7 +25,7 @@ jobs:
         run: pip install platformio==6.1.16
       - name: Firmware bauen
         working-directory: alexa-zentrale
-        run: pio run -e esp32dev -e esp32c3
+        run: pio run -e d1mini -e esp32dev -e esp32c3
       - name: Eine Datei zum Aufspielen pro Chip erzeugen
         working-directory: alexa-zentrale
         run: |
@@ -35,6 +35,7 @@ jobs:
             0x1000 $B/esp32dev/bootloader.bin 0x8000 $B/esp32dev/partitions.bin 0xe000 "$BOOT_APP0" 0x10000 $B/esp32dev/firmware.bin
           pio pkg exec -p tool-esptoolpy -- esptool.py --chip esp32c3 merge_bin -o ../Zentrale-ESP32-C3.bin \
             0x0 $B/esp32c3/bootloader.bin 0x8000 $B/esp32c3/partitions.bin 0xe000 "$BOOT_APP0" 0x10000 $B/esp32c3/firmware.bin
+          cp $B/d1mini/firmware.bin ../Zentrale-D1-mini.bin
           ls -la ../Zentrale-*.bin
       - uses: actions/upload-artifact@v4
         with:
@@ -48,6 +49,7 @@ jobs:
           name: Alexa-Zentrale (Build ${{ github.run_number }})
           body: |
             Firmware für die ESP32-Mini-Zentrale. Die passende Datei wählen:
+            - Zentrale-D1-mini.bin für den Wemos/LOLIN D1 mini (ESP8266)
             - Zentrale-ESP32.bin für „ESP32 DevKitC“ und ähnliche
             - Zentrale-ESP32-C3.bin für „ESP32-C3“-Boards
             Aufspielen am PC mit Chrome oder Edge über https://espressif.github.io/esptool-js/ (Adresse 0x0).

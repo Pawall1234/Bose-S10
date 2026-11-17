@@ -11,10 +11,16 @@
 // Es werden keine Daten ins Internet gesendet.
 
 #include <Arduino.h>
+#if defined(ESP8266)
+#include <ESP8266WiFi.h>
+#include <ESP8266mDNS.h>
+#include <ESP8266HTTPClient.h>
+#else
 #include <WiFi.h>
-#include <WiFiManager.h>
 #include <ESPmDNS.h>
 #include <HTTPClient.h>
+#endif
+#include <WiFiManager.h>
 #include <fauxmoESP.h>
 
 static const int MAX_SPEAKERS = 8;
@@ -40,10 +46,12 @@ static unsigned long lastScan = 0;
 
 // ------------------------------------------------------------------ SoundTouch-API
 
+static WiFiClient netClient;
+
 static String httpGet(const IPAddress& ip, const String& path) {
     HTTPClient http;
     http.setTimeout(4000);
-    http.begin("http://" + ip.toString() + ":8090" + path);
+    http.begin(netClient, "http://" + ip.toString() + ":8090" + path);
     int code = http.GET();
     String body = code == 200 ? http.getString() : String();
     http.end();
@@ -53,7 +61,7 @@ static String httpGet(const IPAddress& ip, const String& path) {
 static bool httpPost(const IPAddress& ip, const String& path, const String& body) {
     HTTPClient http;
     http.setTimeout(4000);
-    http.begin("http://" + ip.toString() + ":8090" + path);
+    http.begin(netClient, "http://" + ip.toString() + ":8090" + path);
     http.addHeader("Content-Type", "text/xml");
     int code = http.POST(body);
     http.end();
@@ -101,7 +109,11 @@ static void scanSpeakers(bool allowNew) {
     int n = MDNS.queryService("soundtouch", "tcp");
     Serial.printf("mDNS: %d SoundTouch gefunden\n", n);
     for (int i = 0; i < n; i++) {
+#if defined(ESP8266)
         IPAddress ip = MDNS.IP(i);
+#else
+        IPAddress ip = MDNS.IP(i);
+#endif
         String info = httpGet(ip, "/info");
         String name = xmlUnescape(xmlText(info, "name"));
         if (name.length() == 0) name = MDNS.hostname(i);
@@ -146,7 +158,11 @@ void setup() {
         Serial.println("Keine WLAN-Daten erhalten, Neustart");
         ESP.restart();
     }
+#if defined(ESP8266)
+    WiFi.setSleepMode(WIFI_NONE_SLEEP);
+#else
     WiFi.setSleep(false);
+#endif
     Serial.printf("WLAN verbunden, IP %s\n", WiFi.localIP().toString().c_str());
 
     MDNS.begin("soundtouch-zentrale");
@@ -179,6 +195,9 @@ void setup() {
 
 void loop() {
     fauxmo.handle();
+#if defined(ESP8266)
+    MDNS.update();
+#endif
 
     for (int k = 0; k < speakerCount; k++) {
         if (!pendingCommands[k].pending) continue;

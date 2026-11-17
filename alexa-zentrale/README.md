@@ -10,13 +10,13 @@ Ein ESP32 gibt sich gegenüber dem Echo als Philips-Hue-Lampe aus. Jeder SoundTo
 
 ## Einkaufsliste
 
-- ESP32-Board mit USB, z. B. „ESP32 DevKitC“ oder „ESP32-C3 Mini“
+- Wemos/LOLIN **D1 mini** (ESP8266) oder ein ESP32-Board, z. B. „ESP32 DevKitC“ oder „ESP32-C3 Mini“
 - USB-Datenkabel
 - USB-Netzteil für den Dauerbetrieb
 
 ## Aufspielen (einmalig, am PC oder Laptop)
 
-1. Unter **Releases** die neueste „Alexa-Zentrale“ öffnen und die passende Datei laden: `Zentrale-ESP32.bin` oder `Zentrale-ESP32-C3.bin`.
+1. Unter **Releases** die neueste „Alexa-Zentrale“ öffnen und die passende Datei laden: `Zentrale-D1-mini.bin`, `Zentrale-ESP32.bin` oder `Zentrale-ESP32-C3.bin`.
 2. In Chrome oder Edge https://espressif.github.io/esptool-js/ öffnen, Board per USB anschließen, **Connect** klicken und den Anschluss wählen.
 3. Bei **Flash Address** `0x0` eintragen, die Datei wählen und **Program** klicken.
 
