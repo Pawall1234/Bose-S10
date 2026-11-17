@@ -129,6 +129,31 @@ fun App() {
 
     BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
 
+    val appScope = rememberCoroutineScope()
+    var rediscovering by remember { mutableStateOf(false) }
+
+    // Sucht die Lautsprecher im Heimnetz und übernimmt geänderte Adressen (z. B. nach einem Router-Neustart).
+    fun rediscover() {
+        if (rediscovering) return
+        appScope.launch {
+            rediscovering = true
+            val found = runCatching { SpeakerDiscovery(context).discover() }.getOrDefault(emptyList())
+            if (found.isNotEmpty()) {
+                speakers = store.merge(found)
+                val s = screen
+                if (s is Screen.Control) {
+                    speakers.firstOrNull {
+                        (s.speaker.deviceId.isNotEmpty() && it.deviceId == s.speaker.deviceId) || it.name == s.speaker.name
+                    }?.let { screen = Screen.Control(it) }
+                }
+            }
+            rediscovering = false
+        }
+    }
+
+    // Beim Start einmal still nachsehen, ob sich Adressen geändert haben.
+    LaunchedEffect(Unit) { if (speakers.isNotEmpty()) rediscover() }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -141,7 +166,9 @@ fun App() {
                     speakers = speakers,
                     onOpen = { screen = Screen.Control(it) },
                     onSetup = { screen = Screen.Setup },
-                    onFound = { found -> found.forEach { speakers = store.upsert(it) } },
+                    onFound = { found -> speakers = store.merge(found) },
+                    onRediscover = { rediscover() },
+                    rediscovering = rediscovering,
                     onRemove = { speakers = store.remove(it) },
                 )
                 Screen.Setup -> SetupScreen(
@@ -150,7 +177,7 @@ fun App() {
                         screen = Screen.Home
                     },
                 )
-                is Screen.Control -> ControlScreen(s.speaker, onBack = { screen = Screen.Home })
+                is Screen.Control -> ControlScreen(s.speaker, onBack = { screen = Screen.Home }, onRediscover = { rediscover() }, rediscovering = rediscovering)
             }
         }
     }
@@ -210,6 +237,8 @@ private fun HomeScreen(
     onSetup: () -> Unit,
     onFound: (List<Speaker>) -> Unit,
     onRemove: (Speaker) -> Unit,
+    onRediscover: () -> Unit,
+    rediscovering: Boolean,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -241,7 +270,7 @@ private fun HomeScreen(
             }
         }
 
-        speakers.forEach { sp -> RoomCard(sp, onOpen = { onOpen(sp) }, onRemove = { onRemove(sp) }) }
+        speakers.forEach { sp -> RoomCard(sp, onOpen = { onOpen(sp) }, onRemove = { onRemove(sp) }, onRediscover = onRediscover, rediscovering = rediscovering) }
 
         if (speakers.isNotEmpty()) {
             Button(onClick = onSetup, modifier = Modifier.fillMaxWidth().height(56.dp)) {
@@ -326,7 +355,7 @@ private fun HomeScreen(
 
 /** Karte für einen Raum mit Live-Status, Ein/Aus und Lautstärke direkt auf der Startseite. */
 @Composable
-private fun RoomCard(speaker: Speaker, onOpen: () -> Unit, onRemove: () -> Unit) {
+private fun RoomCard(speaker: Speaker, onOpen: () -> Unit, onRemove: () -> Unit, onRediscover: () -> Unit, rediscovering: Boolean) {
     val scope = rememberCoroutineScope()
     val api = remember(speaker) { SoundTouchApi(speaker.host) }
     var now by remember { mutableStateOf<NowPlaying?>(null) }
@@ -393,10 +422,18 @@ private fun RoomCard(speaker: Speaker, onOpen: () -> Unit, onRemove: () -> Unit)
                     Text("${volume.toInt()}", style = MaterialTheme.typography.labelLarge, modifier = Modifier.width(32.dp))
                 }
             } else if (online == false) {
-                TextButton(onClick = onRemove) {
-                    Icon(Icons.Filled.DeleteOutline, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Entfernen")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(enabled = !rediscovering, onClick = onRediscover) {
+                        if (rediscovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Filled.Search, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (rediscovering) "Suche …" else "Neu suchen")
+                    }
+                    TextButton(onClick = onRemove) {
+                        Icon(Icons.Filled.DeleteOutline, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Entfernen")
+                    }
                 }
             }
         }
@@ -481,7 +518,7 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
                     ?: list.singleOrNull()
             }
         }
-        val r = found?.let { Speaker(wanted.ifBlank { it.name }, it.host) }
+        val r = found?.let { Speaker(wanted.ifBlank { it.name }, it.host, it.deviceId) }
         result = r
         // Namen erst im Heimnetz setzen, damit die Einrichtung nicht gestört wird.
         if (r != null && wanted.isNotBlank()) runCatching { SoundTouchApi(r.host).setName(wanted) }
@@ -742,7 +779,7 @@ private fun BusyCard(title: String, subtitle: String) {
 // ---------------------------------------------------------------- Steuerung
 
 @Composable
-private fun ControlScreen(speaker: Speaker, onBack: () -> Unit) {
+private fun ControlScreen(speaker: Speaker, onBack: () -> Unit, onRediscover: () -> Unit, rediscovering: Boolean) {
     val scope = rememberCoroutineScope()
     val api = remember(speaker) { SoundTouchApi(speaker.host) }
     var now by remember { mutableStateOf<NowPlaying?>(null) }
@@ -805,6 +842,20 @@ private fun ControlScreen(speaker: Speaker, onBack: () -> Unit) {
                 }
                 Text(sub, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f))
             }
+        }
+
+        if (!online) {
+            FilledTonalButton(enabled = !rediscovering, onClick = onRediscover, modifier = Modifier.fillMaxWidth().height(52.dp)) {
+                if (rediscovering) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                else Icon(Icons.Filled.Search, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (rediscovering) "Suche im Heimnetz …" else "Lautsprecher neu suchen")
+            }
+            Text(
+                "Leuchtet die WLAN-Anzeige am Lautsprecher weiß, ist er im WLAN. Leuchtet sie orange, ist er wieder im Einrichtungsmodus.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         // Wiedergabe-Steuerung

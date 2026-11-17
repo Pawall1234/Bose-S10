@@ -18,7 +18,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
 /** Ein gespeicherter Lautsprecher im Heimnetz. */
-data class Speaker(val name: String, val host: String)
+data class Speaker(val name: String, val host: String, val deviceId: String = "")
 
 /** Speichert die Lautsprecher nur lokal auf dem Handy. */
 class SpeakerStore(context: Context) {
@@ -26,10 +26,34 @@ class SpeakerStore(context: Context) {
 
     fun load(): List<Speaker> = prefs.getString("list", "")!!
         .lines().filter { it.contains('|') }
-        .map { Speaker(it.substringBefore('|'), it.substringAfter('|')) }
+        .map { line ->
+            val parts = line.split('|')
+            Speaker(parts[0], parts.getOrElse(1) { "" }, parts.getOrElse(2) { "" })
+        }
 
     fun save(list: List<Speaker>) {
-        prefs.edit().putString("list", list.joinToString("\n") { "${it.name.replace("|", " ")}|${it.host}" }).apply()
+        prefs.edit().putString("list", list.joinToString("\n") { "${it.name.replace("|", " ")}|${it.host}|${it.deviceId}" }).apply()
+    }
+
+    /**
+     * Übernimmt Suchergebnisse: Bekannte Lautsprecher (gleiche Geräte-ID, gleicher Name oder gleiche
+     * Adresse) bekommen ihre neue Adresse, der gespeicherte Raumname bleibt. Neue werden ergänzt.
+     */
+    fun merge(found: List<Speaker>): List<Speaker> {
+        val list = load().toMutableList()
+        for (f in found) {
+            val i = list.indexOfFirst {
+                (f.deviceId.isNotEmpty() && it.deviceId == f.deviceId) ||
+                    it.name.equals(f.name, ignoreCase = true) || it.host == f.host
+            }
+            if (i >= 0) {
+                list[i] = list[i].copy(host = f.host, deviceId = f.deviceId.ifEmpty { list[i].deviceId })
+            } else {
+                list.add(f)
+            }
+        }
+        save(list)
+        return list
     }
 
     fun upsert(speaker: Speaker): List<Speaker> {
@@ -128,7 +152,11 @@ class SpeakerDiscovery(private val context: Context) {
             val resolved = resolve(nsd, info) ?: continue
             @Suppress("DEPRECATION")
             val host = resolved.host?.hostAddress ?: continue
-            if (result.none { it.host == host }) result.add(Speaker(resolved.serviceName, host))
+            if (result.none { it.host == host }) {
+                // Name und Geräte-ID direkt beim Lautsprecher abfragen, damit er sich später wiedererkennen lässt.
+                val info = runCatching { SoundTouchApi(host).info() }.getOrNull()
+                result.add(Speaker(info?.name?.ifBlank { null } ?: resolved.serviceName, host, info?.deviceId ?: ""))
+            }
         }
         lock.release()
         return result
