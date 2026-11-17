@@ -1,6 +1,6 @@
 // Alexa-Zentrale für Bose SoundTouch
 //
-// Ein ESP32 gibt sich gegenüber dem Echo als Philips-Hue-Lampe aus (fauxmoESP, rein lokal, ohne Cloud).
+// Ein ESP32 gibt sich gegenüber dem Echo als Philips-Hue-Lampe aus (Espalexa, rein lokal, ohne Cloud).
 // Jeder gefundene SoundTouch-Lautsprecher wird zu einer "Lampe" mit seinem Namen, z. B. "Küche".
 //   "Alexa, schalte Küche ein"          -> Lautsprecher einschalten
 //   "Alexa, schalte Küche aus"          -> Lautsprecher in Standby
@@ -22,7 +22,6 @@
 #endif
 #include <WiFiManager.h>
 #include <EEPROM.h>
-#include <fauxmoESP.h>
 #if defined(ESP8266)
 #include <ESP8266WebServer.h>
 typedef ESP8266WebServer StationServer;
@@ -30,6 +29,7 @@ typedef ESP8266WebServer StationServer;
 #include <WebServer.h>
 typedef WebServer StationServer;
 #endif
+#include <Espalexa.h>
 
 static const int MAX_SPEAKERS = 8;
 static const unsigned long RESCAN_INTERVAL_MS = 10UL * 60UL * 1000UL;  // Adressen alle 10 Minuten auffrischen
@@ -47,7 +47,9 @@ struct PendingCommand {
     unsigned char value = 0;
 };
 
-static fauxmoESP fauxmo;
+static Espalexa espalexa;
+static StationServer alexaServer(80);  // Hue-Schnittstelle für Alexa, muss auf Port 80 liegen
+static unsigned long alexaHits = 0;      // wie oft Alexa die Zentrale abgefragt hat
 
 // Sender-Vermittlung für die Senderplätze 1-6: Der Lautsprecher fragt beim Abspielen eines
 // LOCAL_INTERNET_RADIO-Senders diese Adresse ab und bekommt die Stream-Adresse zurück
@@ -209,7 +211,7 @@ static void handleStatus() {
         html += "<li>" + speakers[k].name + " (" + speakers[k].ip.toString() + ") &rarr; Alexa: <b>" + speakers[k].alexaName + "</b></li>";
     }
     if (speakerCount == 0) html += "<li><b>Noch keiner gefunden.</b></li>";
-    html += "</ul><p>Letzter Alexa-Befehl: " + lastAlexa + "</p><p><a href='/scan'>Jetzt suchen</a> (dauert bis zu 1 Minute)</p>"
+    html += "</ul><p>Letzter Alexa-Befehl: " + lastAlexa + "<br>Abfragen von Alexa: " + String(alexaHits) + "</p><p><a href='/scan'>Jetzt suchen</a> (dauert bis zu 1 Minute)</p>"
             "<h3>Von Hand hinzufügen</h3><form action='/add'>"
             "<p>Name für Alexa<br><input name=name placeholder='Küche'></p>"
             "<p>IP-Adresse<br><input name=ip placeholder='192.168.178.xx'></p>"
@@ -252,11 +254,11 @@ static void handleForget() {
     ESP.restart();
 }
 
-static const char* FIRMWARE_VERSION = "8";
+static const char* FIRMWARE_VERSION = "9";
 
 static String statusJson() {
     String j = String("{\"version\":\"") + FIRMWARE_VERSION + "\",\"ip\":\"" + WiFi.localIP().toString() +
-        "\",\"lastAlexa\":\"" + jsonEscape(lastAlexa) + "\",\"scanning\":" + ((scanRequested || scanningNow) ? "true" : "false") +
+        "\",\"lastAlexa\":\"" + jsonEscape(lastAlexa) + "\",\"alexaHits\":" + String(alexaHits) + ",\"scanning\":" + ((scanRequested || scanningNow) ? "true" : "false") +
         ",\"speakers\":[";
     for (int k = 0; k < speakerCount; k++) {
         if (k) j += ",";
@@ -310,6 +312,24 @@ static void apiRemove() {
 // ------------------------------------------------------------------ Lautsprecher finden
 
 // Gespeicherte Lautsprecher im Flash: "Name|IP\n..." (nur Raumname und Heimnetz-Adresse).
+static int speakerIndexForFauxmo(unsigned char deviceId);
+
+// Wird aufgerufen, wenn Alexa etwas schaltet. Nur merken, die Arbeit passiert in loop(),
+// damit Alexa sofort eine Antwort bekommt.
+static void onAlexa(EspalexaDevice* d) {
+    if (d == nullptr) return;
+    int k = speakerIndexForFauxmo(d->getId());
+    if (k < 0) return;
+    EspalexaDeviceProperty prop = d->getLastChangedProperty();
+    bool on = prop != EspalexaDeviceProperty::off && d->getValue() > 0;
+    pendingCommands[k].state = on;
+    pendingCommands[k].value = (prop == EspalexaDeviceProperty::bri) ? d->getValue() : 0;
+    pendingCommands[k].pending = true;
+    lastAlexa = speakers[k].alexaName + (on ? " an" : " aus");
+    if (prop == EspalexaDeviceProperty::bri) lastAlexa += ", Lautstärke " + String((d->getValue() * 100 + 127) / 255);
+    Serial.println("Alexa: " + lastAlexa);
+}
+
 static void saveSpeakers() {
     String data = "ST1\n";
     for (int k = 0; k < speakerCount; k++) {
@@ -328,19 +348,6 @@ static String cleanName(String n) {
     n.replace("\"", "");
     if (n.length() > 40) n = n.substring(0, 40);
     return n;
-}
-
-// Eigene Geräte-Kennung aus dem Alexa-Namen ableiten. Die Standard-Kennung hängt nur an der Reihenfolge,
-// dann hält Alexa einen umbenannten Lautsprecher für ein schon bekanntes Gerät und zeigt ihn nicht neu an.
-static void applyUniqueId(int k) {
-    uint32_t h = 2166136261u;
-    for (size_t i = 0; i < speakers[k].alexaName.length(); i++) {
-        h = (h ^ (uint8_t)speakers[k].alexaName[i]) * 16777619u;
-    }
-    char uid[32];
-    snprintf(uid, sizeof(uid), "%02X:%s:%02X:%02X", (unsigned)(h & 0xFF), WiFi.macAddress().c_str(),
-             (unsigned)((h >> 8) & 0xFF), (unsigned)((h >> 16) & 0xFF));
-    fauxmo.setDeviceUniqueId(speakers[k].fauxmoId, uid);
 }
 
 static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist = true, const String& rawAlexa = "") {
@@ -366,8 +373,9 @@ static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist 
         if (name.indexOf("adio") < 0) alexa += " Radio";
     }
     speakers[k].alexaName = alexa;
-    speakers[k].fauxmoId = fauxmo.addDevice(speakers[k].alexaName.c_str());
-    applyUniqueId(k);
+    EspalexaDevice* dev = new EspalexaDevice(speakers[k].alexaName, onAlexa, EspalexaDeviceType::dimmable, 0);
+    espalexa.addDevice(dev);
+    speakers[k].fauxmoId = dev->getId();
     speakerCount++;
     Serial.printf("  neu: %s -> %s\n", name.c_str(), ip.toString().c_str());
     if (persist) saveSpeakers();
@@ -385,8 +393,7 @@ static bool renameForAlexa(const String& name, const String& rawAlexa) {
     String alexa = cleanName(rawAlexa);
     if (k < 0 || alexa.length() == 0) return false;
     speakers[k].alexaName = alexa;
-    fauxmo.renameDevice(speakers[k].fauxmoId, speakers[k].alexaName.c_str());
-    applyUniqueId(k);
+    espalexa.renameDevice(speakers[k].fauxmoId + 1, speakers[k].alexaName);
     saveSpeakers();
     return true;
 }
@@ -470,7 +477,7 @@ static int scanSubnet() {
 #endif
         c.stop();
         if (open && probeSpeaker(ip)) ok++;
-        fauxmo.handle();
+        espalexa.loop();
         stationServer.handleClient();  // App und Statusseite bleiben während der Suche erreichbar
         yield();
     }
@@ -538,30 +545,23 @@ void setup() {
     MDNS.addService("stzentrale", "tcp", STATION_PORT);  // damit die App die Zentrale findet
 
     // Hue-Emulation zuerst starten, damit Alexa die Zentrale immer findet.
-    fauxmo.createServer(true);
-    fauxmo.setPort(80);  // Pflicht für neuere Echo-Geräte
-    fauxmo.enable(true);
+    espalexa.begin(&alexaServer);
+    alexaServer.onNotFound([]() {
+        alexaHits++;
+        if (!espalexa.handleAlexaApiCall(alexaServer.uri(), alexaServer.arg(0))) {
+            alexaServer.send(404, "text/plain", "Not Found");
+        }
+    });
 
     EEPROM.begin(EEPROM_SIZE);
     loadSpeakers();  // bekannte Lautsprecher sofort anmelden
     scanSpeakers(true);
 
-    // Wird im Netzwerk-Kontext aufgerufen: nur merken, die Arbeit passiert in loop().
-    fauxmo.onSetState([](unsigned char deviceId, const char* deviceName, bool state, unsigned char value) {
-        int k = speakerIndexForFauxmo(deviceId);
-        if (k < 0) return;
-        pendingCommands[k].state = state;
-        pendingCommands[k].value = value;
-        pendingCommands[k].pending = true;
-        Serial.printf("Alexa: %s %s, Wert %d\n", deviceName, state ? "an" : "aus", value);
-        lastAlexa = String(deviceName) + (state ? " an" : " aus") + ", Wert " + String(value);
-    });
-
     Serial.printf("Bereit mit %d Lautsprecher(n). Jetzt \"Alexa, suche Geräte\" sagen.\n", speakerCount);
 }
 
 void loop() {
-    fauxmo.handle();
+    espalexa.loop();
     stationServer.handleClient();
 #if defined(ESP8266)
     MDNS.update();
@@ -580,7 +580,7 @@ void loop() {
         // Alexa schickt bei "auf X Prozent" einen Wert von 1 bis 255.
         if (wantOn) {
             int volume = (pendingCommands[k].value * 100 + 127) / 255;
-            if (pendingCommands[k].value < 255) setVolume(ip, volume);
+            if (pendingCommands[k].value > 0) setVolume(ip, volume);
         }
     }
 

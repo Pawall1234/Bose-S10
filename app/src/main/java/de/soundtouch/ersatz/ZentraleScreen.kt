@@ -60,6 +60,7 @@ data class ZentraleStatus(
     val version: String,
     val ip: String,
     val lastAlexa: String,
+    val alexaHits: Int,
     val scanning: Boolean,
     val speakers: List<ZentraleSpeaker>,
 )
@@ -97,6 +98,7 @@ object ZentraleApi {
             version = json.optString("version"),
             ip = json.optString("ip"),
             lastAlexa = json.optString("lastAlexa"),
+            alexaHits = json.optInt("alexaHits", -1),
             scanning = json.optBoolean("scanning"),
             speakers = list,
         )
@@ -200,6 +202,13 @@ fun ZentraleScreen(appSpeakers: List<Speaker>, onBack: () -> Unit) {
                         Text(if (error.isEmpty()) "Verbunden" else "Verbindung gestört", style = MaterialTheme.typography.titleLarge)
                         Text("Adresse $host" + (s?.version?.takeIf { it.isNotBlank() }?.let { " · Firmware $it" } ?: ""))
                         Text("Letzter Alexa-Befehl: ${s?.lastAlexa ?: "…"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (s != null && s.alexaHits >= 0) {
+                            Text(
+                                if (s.alexaHits == 0) "Alexa hat die Zentrale seit dem Start noch nicht abgefragt."
+                                else "Alexa hat die Zentrale ${s.alexaHits}-mal abgefragt.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         if (s?.scanning == true) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
