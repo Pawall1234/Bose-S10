@@ -118,6 +118,7 @@ private sealed interface Screen {
     data object Home : Screen
     data object Setup : Screen
     data class Control(val speaker: Speaker) : Screen
+    data class Stations(val speaker: Speaker) : Screen
 }
 
 @Composable
@@ -127,7 +128,10 @@ fun App() {
     var speakers by remember { mutableStateOf(store.load()) }
     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
 
-    BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
+    BackHandler(enabled = screen != Screen.Home) {
+        val s = screen
+        screen = if (s is Screen.Stations) Screen.Control(s.speaker) else Screen.Home
+    }
 
     val appScope = rememberCoroutineScope()
     var rediscovering by remember { mutableStateOf(false) }
@@ -177,7 +181,14 @@ fun App() {
                         screen = Screen.Home
                     },
                 )
-                is Screen.Control -> ControlScreen(s.speaker, onBack = { screen = Screen.Home }, onRediscover = { rediscover() }, rediscovering = rediscovering)
+                is Screen.Control -> ControlScreen(
+                    s.speaker,
+                    onBack = { screen = Screen.Home },
+                    onRediscover = { rediscover() },
+                    rediscovering = rediscovering,
+                    onStations = { screen = Screen.Stations(s.speaker) },
+                )
+                is Screen.Stations -> StationsScreen(s.speaker, onBack = { screen = Screen.Control(s.speaker) })
             }
         }
     }
@@ -201,7 +212,7 @@ private fun greeting(): String = when (Calendar.getInstance().get(Calendar.HOUR_
 }
 
 @Composable
-private fun ScreenHeader(title: String, subtitle: String? = null, onBack: (() -> Unit)? = null) {
+fun ScreenHeader(title: String, subtitle: String? = null, onBack: (() -> Unit)? = null) {
     Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (onBack != null) {
             IconButton(onClick = onBack) {
@@ -780,7 +791,7 @@ private fun BusyCard(title: String, subtitle: String) {
 // ---------------------------------------------------------------- Steuerung
 
 @Composable
-private fun ControlScreen(speaker: Speaker, onBack: () -> Unit, onRediscover: () -> Unit, rediscovering: Boolean) {
+private fun ControlScreen(speaker: Speaker, onBack: () -> Unit, onRediscover: () -> Unit, rediscovering: Boolean, onStations: () -> Unit) {
     val scope = rememberCoroutineScope()
     val api = remember(speaker) { SoundTouchApi(speaker.host) }
     var now by remember { mutableStateOf<NowPlaying?>(null) }
@@ -910,6 +921,9 @@ private fun ControlScreen(speaker: Speaker, onBack: () -> Unit, onRediscover: ()
                 }
             }
         }
+
+        // Senderplätze 1–6
+        if (online) PresetSection(api, onManage = onStations)
 
         // Quellen
         Text("Quelle", style = MaterialTheme.typography.titleMedium)

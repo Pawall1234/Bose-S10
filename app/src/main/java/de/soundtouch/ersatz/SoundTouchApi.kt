@@ -10,6 +10,9 @@ import java.net.URL
 /** Infos, die der Lautsprecher über sich selbst meldet (Antwort von /info). */
 data class DeviceInfo(val name: String, val type: String, val deviceId: String)
 
+/** Ein Senderplatz (1–6) auf dem Lautsprecher. */
+data class Preset(val id: Int, val name: String)
+
 /** Was gerade läuft (Antwort von /now_playing). */
 data class NowPlaying(
     val source: String,
@@ -96,6 +99,42 @@ class SoundTouchApi(private val host: String, private val network: Network? = nu
     suspend fun selectSource(source: String) {
         val account = if (source == "AUX") " sourceAccount=\"AUX\"" else ""
         post("/select", "<ContentItem source=\"$source\"$account></ContentItem>")
+    }
+
+    /** Liest die Senderplätze 1–6. */
+    suspend fun presets(): List<Preset> {
+        val xml = get("/presets")
+        return Regex("<preset\\s[^>]*id=\"(\\d+)\"[^>]*>(.*?)</preset>", RegexOption.DOT_MATCHES_ALL)
+            .findAll(xml)
+            .mapNotNull { m ->
+                val id = m.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+                Preset(id, Xml.text(m.groupValues[2], "itemName"))
+            }.toList()
+    }
+
+    private fun radioContentItem(name: String, location: String, imageUrl: String = "") =
+        "<ContentItem source=\"LOCAL_INTERNET_RADIO\" type=\"stationurl\" location=\"${Xml.escape(location)}\" " +
+            "sourceAccount=\"\" isPresetable=\"true\"><itemName>${Xml.escape(name)}</itemName>" +
+            (if (imageUrl.isNotBlank()) "<containerArt>${Xml.escape(imageUrl)}</containerArt>" else "") +
+            "</ContentItem>"
+
+    /** Speichert einen Radiosender auf einem Senderplatz (1–6). */
+    suspend fun storeRadioPreset(id: Int, name: String, location: String, imageUrl: String = "") {
+        val now = System.currentTimeMillis() / 1000
+        post(
+            "/storePreset",
+            "<preset id=\"$id\" createdOn=\"$now\" updatedOn=\"$now\">${radioContentItem(name, location, imageUrl)}</preset>",
+        )
+    }
+
+    /** Spielt einen Radiosender sofort ab. */
+    suspend fun playRadio(name: String, location: String, imageUrl: String = "") {
+        post("/select", radioContentItem(name, location, imageUrl))
+    }
+
+    /** Senderplatz abspielen, wie ein Druck auf die Taste am Lautsprecher. */
+    suspend fun playPreset(id: Int) {
+        key("PRESET_$id")
     }
 
     suspend fun setName(name: String) {

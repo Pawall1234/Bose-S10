@@ -22,6 +22,13 @@
 #endif
 #include <WiFiManager.h>
 #include <fauxmoESP.h>
+#if defined(ESP8266)
+#include <ESP8266WebServer.h>
+typedef ESP8266WebServer StationServer;
+#else
+#include <WebServer.h>
+typedef WebServer StationServer;
+#endif
 
 static const int MAX_SPEAKERS = 8;
 static const unsigned long RESCAN_INTERVAL_MS = 10UL * 60UL * 1000UL;  // Adressen alle 10 Minuten auffrischen
@@ -39,6 +46,13 @@ struct PendingCommand {
 };
 
 static fauxmoESP fauxmo;
+
+// Sender-Vermittlung für die Senderplätze 1-6: Der Lautsprecher fragt beim Abspielen eines
+// LOCAL_INTERNET_RADIO-Senders diese Adresse ab und bekommt die Stream-Adresse zurück
+// (früher hat das die Bose-Cloud erledigt).
+static const uint16_t STATION_PORT = 8181;
+static const char* STATION_PATH = "/core02/svc-bmx-adapter-orion/prod/orion/station";
+static StationServer stationServer(STATION_PORT);
 static SpeakerEntry speakers[MAX_SPEAKERS];
 static PendingCommand pendingCommands[MAX_SPEAKERS];
 static int speakerCount = 0;
@@ -99,6 +113,96 @@ static void pressKey(const IPAddress& ip, const char* key) {
 static void setVolume(const IPAddress& ip, int volume) {
     volume = constrain(volume, 0, 100);
     httpPost(ip, "/volume", "<volume>" + String(volume) + "</volume>");
+}
+
+// ------------------------------------------------------------------ Sender-Vermittlung
+
+static int b64Value(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+' || c == '-' || c == ' ') return 62;
+    if (c == '/' || c == '_') return 63;
+    return -1;
+}
+
+// Base64 dekodieren (normales und URL-sicheres Alphabet, Auffüllzeichen optional).
+static String base64Decode(const String& in) {
+    String out;
+    int buffer = 0, bits = 0;
+    for (size_t i = 0; i < in.length(); i++) {
+        int v = b64Value(in[i]);
+        if (v < 0) continue;
+        buffer = (buffer << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out += (char)((buffer >> bits) & 0xFF);
+        }
+    }
+    return out;
+}
+
+// Liest einen Text-Wert aus einem kleinen JSON-Objekt.
+static String jsonString(const String& json, const char* key) {
+    String needle = String("\"") + key + "\"";
+    int k = json.indexOf(needle);
+    if (k < 0) return "";
+    int colon = json.indexOf(':', k + needle.length());
+    int q = json.indexOf('"', colon + 1);
+    if (colon < 0 || q < 0) return "";
+    String out;
+    for (size_t i = q + 1; i < json.length(); i++) {
+        char c = json[i];
+        if (c == '\\' && i + 1 < json.length()) {
+            char n = json[++i];
+            out += (n == 'n') ? '\n' : n;
+        } else if (c == '"') {
+            break;
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+static String jsonEscape(const String& s) {
+    String out;
+    for (size_t i = 0; i < s.length(); i++) {
+        char c = s[i];
+        if (c == '"' || c == '\\') { out += '\\'; out += c; }
+        else if ((unsigned char)c < 0x20) out += ' ';
+        else out += c;
+    }
+    return out;
+}
+
+static void handleStation() {
+    String payload = base64Decode(stationServer.arg("data"));
+    String streamUrl = jsonString(payload, "streamUrl");
+    if (streamUrl.length() == 0) {
+        stationServer.send(400, "text/plain", "data muss eine streamUrl enthalten");
+        return;
+    }
+    String name = jsonString(payload, "name");
+    String imageUrl = jsonString(payload, "imageUrl");
+    String body = String("{\"audio\":{\"hasPlaylist\":false,\"isRealtime\":true,\"streamUrl\":\"") +
+        jsonEscape(streamUrl) + "\"},\"imageUrl\":\"" + jsonEscape(imageUrl) + "\",\"name\":\"" +
+        jsonEscape(name) + "\",\"streamType\":\"liveRadio\"}";
+    stationServer.sendHeader("Cache-Control", "no-store");
+    stationServer.send(200, "application/json; charset=utf-8", body);
+    Serial.printf("Sender angefragt: %s\n", name.c_str());
+}
+
+static void handleStatus() {
+    String html = "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+                  "<title>SoundTouch-Zentrale</title><body style='font-family:sans-serif;padding:16px'>"
+                  "<h2>SoundTouch-Zentrale</h2><p>Gefundene Lautsprecher:</p><ul>";
+    for (int k = 0; k < speakerCount; k++) {
+        html += "<li>" + speakers[k].name + " (" + speakers[k].ip.toString() + ")</li>";
+    }
+    html += "</ul></body>";
+    stationServer.send(200, "text/html; charset=utf-8", html);
 }
 
 // ------------------------------------------------------------------ Lautsprecher finden
@@ -167,6 +271,11 @@ void setup() {
 
     MDNS.begin("soundtouch-zentrale");
 
+    stationServer.on(STATION_PATH, handleStation);
+    stationServer.on("/", handleStatus);
+    stationServer.begin();
+    MDNS.addService("stzentrale", "tcp", STATION_PORT);  // damit die App die Zentrale findet
+
     // Bis zu einer Minute nach Lautsprechern suchen
     for (int attempt = 0; attempt < 6 && speakerCount == 0; attempt++) {
         scanSpeakers(true);
@@ -195,6 +304,7 @@ void setup() {
 
 void loop() {
     fauxmo.handle();
+    stationServer.handleClient();
 #if defined(ESP8266)
     MDNS.update();
 #endif
