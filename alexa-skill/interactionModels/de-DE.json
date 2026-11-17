@@ -1,0 +1,475 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "bose radio",
+      "intents": [
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": []
+        },
+        {
+          "name": "MusicIntent",
+          "slots": [
+            {
+              "name": "room",
+              "type": "ROOM"
+            }
+          ],
+          "samples": [
+            "spiel musik im {room}",
+            "spiel musik in der {room}",
+            "spiel musik auf {room}",
+            "spiele musik im {room}",
+            "spiele musik in der {room}",
+            "spiele musik auf {room}",
+            "musik im {room}",
+            "musik in der {room}",
+            "musik auf {room}",
+            "spiel radio im {room}",
+            "spiel radio in der {room}",
+            "spiel radio auf {room}",
+            "spiele radio im {room}",
+            "spiele radio in der {room}",
+            "spiele radio auf {room}",
+            "mach musik an im {room}",
+            "mach musik an in der {room}",
+            "mach musik an auf {room}"
+          ]
+        },
+        {
+          "name": "PresetIntent",
+          "slots": [
+            {
+              "name": "number",
+              "type": "AMAZON.NUMBER"
+            },
+            {
+              "name": "room",
+              "type": "ROOM"
+            }
+          ],
+          "samples": [
+            "spiel platz {number} im {room}",
+            "spiel platz {number} in der {room}",
+            "spiel platz {number} auf {room}",
+            "spiele platz {number} im {room}",
+            "spiele platz {number} in der {room}",
+            "spiele platz {number} auf {room}",
+            "senderplatz {number} im {room}",
+            "senderplatz {number} in der {room}",
+            "senderplatz {number} auf {room}",
+            "spiel senderplatz {number} im {room}",
+            "spiel senderplatz {number} in der {room}",
+            "spiel senderplatz {number} auf {room}",
+            "spiele senderplatz {number} im {room}",
+            "spiele senderplatz {number} in der {room}",
+            "spiele senderplatz {number} auf {room}"
+          ]
+        },
+        {
+          "name": "PlayIntent",
+          "slots": [
+            {
+              "name": "station",
+              "type": "STATION_NAME"
+            },
+            {
+              "name": "room",
+              "type": "ROOM"
+            }
+          ],
+          "samples": [
+            "spiel {station} im {room}",
+            "spiel {station} in der {room}",
+            "spiel {station} auf {room}",
+            "spiele {station} im {room}",
+            "spiele {station} in der {room}",
+            "spiele {station} auf {room}",
+            "{station} im {room}",
+            "{station} in der {room}",
+            "{station} auf {room}",
+            "starte {station} im {room}",
+            "starte {station} in der {room}",
+            "starte {station} auf {room}",
+            "spiel {station}",
+            "spiele {station}",
+            "starte {station}"
+          ]
+        },
+        {
+          "name": "OffIntent",
+          "slots": [
+            {
+              "name": "room",
+              "type": "ROOM"
+            }
+          ],
+          "samples": [
+            "{room} aus",
+            "schalte {room} aus",
+            "schalt {room} aus",
+            "mach {room} aus",
+            "stopp im {room}",
+            "stopp in der {room}",
+            "aus im {room}",
+            "aus in der {room}",
+            "musik im {room} aus",
+            "musik in der {room} aus"
+          ]
+        },
+        {
+          "name": "OnIntent",
+          "slots": [
+            {
+              "name": "room",
+              "type": "ROOM"
+            }
+          ],
+          "samples": [
+            "schalte {room} ein",
+            "schalte {room} an",
+            "{room} an",
+            "{room} ein",
+            "mach {room} an"
+          ]
+        },
+        {
+          "name": "VolumeIntent",
+          "slots": [
+            {
+              "name": "room",
+              "type": "ROOM"
+            },
+            {
+              "name": "level",
+              "type": "AMAZON.NUMBER"
+            }
+          ],
+          "samples": [
+            "{room} auf {level} prozent",
+            "stell {room} auf {level} prozent",
+            "stelle {room} auf {level} prozent",
+            "lautstärke {room} auf {level}",
+            "lautstärke im {room} auf {level}",
+            "lautstärke in der {room} auf {level}",
+            "lautstärke im {room} auf {level} prozent",
+            "lautstärke in der {room} auf {level} prozent"
+          ]
+        }
+      ],
+      "types": [
+        {
+          "name": "ROOM",
+          "values": [
+            {
+              "id": "bad",
+              "name": {
+                "value": "bad",
+                "synonyms": [
+                  "badezimmer",
+                  "bade zimmer"
+                ]
+              }
+            },
+            {
+              "id": "küche",
+              "name": {
+                "value": "küche",
+                "synonyms": [
+                  "kueche",
+                  "kochnische"
+                ]
+              }
+            },
+            {
+              "id": "wohnzimmer",
+              "name": {
+                "value": "wohnzimmer",
+                "synonyms": []
+              }
+            },
+            {
+              "id": "schlafzimmer",
+              "name": {
+                "value": "schlafzimmer",
+                "synonyms": []
+              }
+            },
+            {
+              "id": "kinderzimmer",
+              "name": {
+                "value": "kinderzimmer",
+                "synonyms": []
+              }
+            },
+            {
+              "id": "büro",
+              "name": {
+                "value": "büro",
+                "synonyms": [
+                  "arbeitszimmer"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STATION_NAME",
+          "values": [
+            {
+              "name": {
+                "value": "antenne bayern"
+              }
+            },
+            {
+              "name": {
+                "value": "antenne eins"
+              }
+            },
+            {
+              "name": {
+                "value": "antenne niedersachsen"
+              }
+            },
+            {
+              "name": {
+                "value": "bayern drei"
+              }
+            },
+            {
+              "name": {
+                "value": "bayern eins"
+              }
+            },
+            {
+              "name": {
+                "value": "big fm"
+              }
+            },
+            {
+              "name": {
+                "value": "bigfm"
+              }
+            },
+            {
+              "name": {
+                "value": "bremen vier"
+              }
+            },
+            {
+              "name": {
+                "value": "delta radio"
+              }
+            },
+            {
+              "name": {
+                "value": "deutschlandfunk"
+              }
+            },
+            {
+              "name": {
+                "value": "deutschlandfunk kultur"
+              }
+            },
+            {
+              "name": {
+                "value": "dlf nova"
+              }
+            },
+            {
+              "name": {
+                "value": "eins live"
+              }
+            },
+            {
+              "name": {
+                "value": "eins live diggi"
+              }
+            },
+            {
+              "name": {
+                "value": "energy"
+              }
+            },
+            {
+              "name": {
+                "value": "ffh"
+              }
+            },
+            {
+              "name": {
+                "value": "ffn"
+              }
+            },
+            {
+              "name": {
+                "value": "fritz"
+              }
+            },
+            {
+              "name": {
+                "value": "hit radio ffh"
+              }
+            },
+            {
+              "name": {
+                "value": "hr drei"
+              }
+            },
+            {
+              "name": {
+                "value": "jam fm"
+              }
+            },
+            {
+              "name": {
+                "value": "klassik radio"
+              }
+            },
+            {
+              "name": {
+                "value": "mdr jump"
+              }
+            },
+            {
+              "name": {
+                "value": "n joy"
+              }
+            },
+            {
+              "name": {
+                "value": "ndr eins"
+              }
+            },
+            {
+              "name": {
+                "value": "ndr kultur"
+              }
+            },
+            {
+              "name": {
+                "value": "ndr zwei"
+              }
+            },
+            {
+              "name": {
+                "value": "radio arabella"
+              }
+            },
+            {
+              "name": {
+                "value": "radio bob"
+              }
+            },
+            {
+              "name": {
+                "value": "radio brocken"
+              }
+            },
+            {
+              "name": {
+                "value": "radio eins"
+              }
+            },
+            {
+              "name": {
+                "value": "radio hamburg"
+              }
+            },
+            {
+              "name": {
+                "value": "radio paloma"
+              }
+            },
+            {
+              "name": {
+                "value": "radio regenbogen"
+              }
+            },
+            {
+              "name": {
+                "value": "radio salü"
+              }
+            },
+            {
+              "name": {
+                "value": "radio ton"
+              }
+            },
+            {
+              "name": {
+                "value": "rock antenne"
+              }
+            },
+            {
+              "name": {
+                "value": "rpr eins"
+              }
+            },
+            {
+              "name": {
+                "value": "schlagerradio"
+              }
+            },
+            {
+              "name": {
+                "value": "sunshine live"
+              }
+            },
+            {
+              "name": {
+                "value": "swr drei"
+              }
+            },
+            {
+              "name": {
+                "value": "swr eins"
+              }
+            },
+            {
+              "name": {
+                "value": "wdr eins live"
+              }
+            },
+            {
+              "name": {
+                "value": "wdr fünf"
+              }
+            },
+            {
+              "name": {
+                "value": "wdr vier"
+              }
+            },
+            {
+              "name": {
+                "value": "wdr zwei"
+              }
+            },
+            {
+              "name": {
+                "value": "you fm"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

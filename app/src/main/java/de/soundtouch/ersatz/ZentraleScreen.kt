@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
@@ -29,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -40,7 +42,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -56,12 +60,16 @@ import java.net.URLEncoder
 /** Ein Lautsprecher, wie die Zentrale ihn bei Alexa anmeldet. */
 data class ZentraleSpeaker(val name: String, val alexaName: String, val ip: String)
 
+/** Verbindung zum privaten Alexa-Skill "Bose Radio" (über einen geheimen ntfy.sh-Kanal). */
+data class SkillInfo(val enabled: Boolean, val connected: Boolean, val code: String, val last: String)
+
 data class ZentraleStatus(
     val version: String,
     val ip: String,
     val lastAlexa: String,
     val alexaHits: Int,
     val scanning: Boolean,
+    val skill: SkillInfo?,
     val speakers: List<ZentraleSpeaker>,
 )
 
@@ -100,6 +108,9 @@ object ZentraleApi {
             lastAlexa = json.optString("lastAlexa"),
             alexaHits = json.optInt("alexaHits", -1),
             scanning = json.optBoolean("scanning"),
+            skill = json.optJSONObject("skill")?.let {
+                SkillInfo(it.optBoolean("enabled"), it.optBoolean("connected"), it.optString("code"), it.optString("last"))
+            },
             speakers = list,
         )
     }
@@ -108,6 +119,8 @@ object ZentraleApi {
     suspend fun scan(host: String) = call(host, "/api/scan")
     suspend fun add(host: String, name: String, ip: String) = call(host, "/api/add?name=${enc(name)}&ip=${enc(ip)}")
     suspend fun rename(host: String, name: String, alexa: String) = call(host, "/api/rename?name=${enc(name)}&alexa=${enc(alexa)}")
+    suspend fun setSkill(host: String, on: Boolean) = call(host, "/api/skill?on=${if (on) 1 else 0}")
+    suspend fun newSkillCode(host: String) = call(host, "/api/skill?newcode=1")
 
     /** Entfernen startet die Zentrale neu; die Antwort kann deshalb ausbleiben. */
     suspend fun remove(host: String, name: String) {
@@ -261,6 +274,15 @@ fun ZentraleScreen(appSpeakers: List<Speaker>, onBack: () -> Unit) {
                     }
                 }
 
+                s?.skill?.let { sk ->
+                    SkillCard(
+                        skill = sk,
+                        busy = busy,
+                        onToggle = { on -> act { ZentraleApi.setSkill(host, on) } },
+                        onNewCode = { act { ZentraleApi.newSkillCode(host) } },
+                    )
+                }
+
                 Text(
                     "Nach jeder Änderung: „Alexa, suche Geräte“ sagen. Alte Einträge löschst du in der Alexa-App.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -311,5 +333,51 @@ fun ZentraleScreen(appSpeakers: List<Speaker>, onBack: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { removeTarget = null }) { Text("Abbrechen") } },
         )
+    }
+}
+
+@Composable
+private fun SkillCard(skill: SkillInfo, busy: Boolean, onToggle: (Boolean) -> Unit, onNewCode: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    Card(shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Alexa-Skill „Bose Radio“", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        when {
+                            !skill.enabled -> "Aus"
+                            skill.connected -> "Verbunden, wartet auf Befehle"
+                            else -> "Verbindet …"
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = skill.enabled, enabled = !busy, onCheckedChange = onToggle)
+            }
+            Text(
+                "Damit versteht Alexa zum Beispiel „Alexa, sag Bose Radio, spiel WDR 2 im Bad“. " +
+                    "Die Zentrale hält dafür eine verschlüsselte Verbindung zu ntfy.sh. Übertragen werden nur Raum, Sender und Lautstärke.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (skill.enabled) {
+                Text("Skill-Code (in den Skill eintragen):", style = MaterialTheme.typography.labelLarge)
+                Text(skill.code, style = MaterialTheme.typography.titleMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(onClick = {
+                        clipboard.setText(AnnotatedString(skill.code))
+                        copied = true
+                    }) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (copied) "Kopiert" else "Kopieren")
+                    }
+                    TextButton(enabled = !busy, onClick = onNewCode) { Text("Neuer Code") }
+                }
+                Text("Letzter Skill-Befehl: ${skill.last}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }

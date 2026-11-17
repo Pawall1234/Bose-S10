@@ -66,8 +66,14 @@ static unsigned long lastScan = 0;
 static volatile bool scanRequested = false;
 static String lastAlexa = "noch keiner";
 static bool scanningNow = false;
+static bool skillEnabled = false;
+static String skillTopic;
+static bool skillConnected = false;
+static String skillLastCommand = "noch keiner";
 static const unsigned long EMPTY_RESCAN_MS = 2UL * 60UL * 1000UL;  // solange nichts gefunden: alle 2 Minuten
-static const int EEPROM_SIZE = 512;
+static const int EEPROM_SIZE = 1024;
+static const int SPEAKER_AREA = 768;   // Bytes 0-767: Lautsprecherliste
+static const int SKILL_AREA = 768;     // ab Byte 768: Einstellungen für den Alexa-Skill
 
 // ------------------------------------------------------------------ SoundTouch-API
 
@@ -256,11 +262,14 @@ static void handleForget() {
     ESP.restart();
 }
 
-static const char* FIRMWARE_VERSION = "11";
+static const char* FIRMWARE_VERSION = "12";
 
 static String statusJson() {
     String j = String("{\"version\":\"") + FIRMWARE_VERSION + "\",\"ip\":\"" + WiFi.localIP().toString() +
         "\",\"lastAlexa\":\"" + jsonEscape(lastAlexa) + "\",\"alexaHits\":" + String(alexaHits) + ",\"scanning\":" + ((scanRequested || scanningNow) ? "true" : "false") +
+        ",\"skill\":{\"enabled\":" + String(skillEnabled ? "true" : "false") + ",\"connected\":" +
+        String(skillConnected ? "true" : "false") + ",\"code\":\"" + skillTopic + "\",\"last\":\"" +
+        jsonEscape(skillLastCommand) + "\"}" +
         ",\"speakers\":[";
     for (int k = 0; k < speakerCount; k++) {
         if (k) j += ",";
@@ -311,6 +320,253 @@ static void apiRemove() {
     ESP.restart();
 }
 
+
+// ------------------------------------------------------------------ Alexa-Skill "Bose Radio"
+//
+// Der private Alexa-Skill läuft in Amazons Cloud und kann die Zentrale zu Hause nicht direkt erreichen.
+// Deshalb hält die Zentrale (nur wenn eingeschaltet) eine ausgehende, verschlüsselte Verbindung zu ntfy.sh
+// offen und lauscht auf einem geheimen Kanal. Der Skill schickt dort Befehle wie
+//   play|Bad|<Stream-Adresse>|<Sendername>   preset|Küche|1   off|Bad   vol|Küche|30
+// Es werden nur Raum, Sender und Lautstärke übertragen, keine persönlichen Daten. Keine Portfreigabe nötig.
+
+#if defined(ESP8266)
+#include <WiFiClientSecureBearSSL.h>
+typedef BearSSL::WiFiClientSecure SecureClient;
+#else
+#include <WiFiClientSecure.h>
+typedef WiFiClientSecure SecureClient;
+#endif
+
+static const char* SKILL_HOST = "ntfy.sh";
+static SecureClient* skillClient = nullptr;
+static unsigned long skillLastData = 0;
+static unsigned long skillNextTry = 0;
+static String skillLine;
+
+
+static String randomTopic() {
+    const char* abc = "abcdefghijkmnpqrstuvwxyz23456789";
+    String t = "stz-";
+    for (int i = 0; i < 22; i++) {
+#if defined(ESP8266)
+        uint32_t r = RANDOM_REG32;
+#else
+        uint32_t r = esp_random();
+#endif
+        t += abc[r % 32];
+    }
+    return t;
+}
+
+static void saveSkill() {
+    String data = String("SK1|") + (skillEnabled ? "1" : "0") + "|" + skillTopic;
+    for (int i = 0; i < EEPROM_SIZE - SKILL_AREA; i++) EEPROM.write(SKILL_AREA + i, i < (int)data.length() ? data[i] : 0);
+    EEPROM.commit();
+}
+
+static void loadSkill() {
+    String data;
+    for (int i = SKILL_AREA; i < EEPROM_SIZE; i++) {
+        char c = (char)EEPROM.read(i);
+        if (c == 0 || c == (char)0xFF) break;
+        data += c;
+    }
+    if (data.startsWith("SK1|") && data.length() > 7) {
+        skillEnabled = data.charAt(4) == '1';
+        skillTopic = data.substring(6);
+    }
+    if (skillTopic.length() < 10) {
+        skillTopic = randomTopic();
+        skillEnabled = false;
+        saveSkill();
+    }
+}
+
+static void skillDisconnect() {
+    if (skillClient) {
+        skillClient->stop();
+        delete skillClient;
+        skillClient = nullptr;
+    }
+    skillConnected = false;
+}
+
+static String b64UrlEncode(const String& in) {
+    const char* abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    String out;
+    uint32_t val = 0;
+    int bits = -6;
+    for (size_t i = 0; i < in.length(); i++) {
+        val = (val << 8) + (uint8_t)in[i];
+        bits += 8;
+        while (bits >= 0) {
+            out += abc[(val >> bits) & 0x3F];
+            bits -= 6;
+        }
+    }
+    if (bits > -6) out += abc[((val << 8) >> (bits + 8)) & 0x3F];
+    return out;
+}
+
+static String xmlEscape(String s) {
+    s.replace("&", "&amp;");
+    s.replace("<", "&lt;");
+    s.replace(">", "&gt;");
+    s.replace("\"", "&quot;");
+    s.replace("'", "&apos;");
+    return s;
+}
+
+// Spielt einen Internet-Radiosender sofort ab; der Lautsprecher holt die Stream-Adresse bei der Zentrale ab.
+static bool playStream(const IPAddress& ip, const String& name, const String& streamUrl) {
+    String json = "{\"streamUrl\":\"" + jsonEscape(streamUrl) + "\",\"name\":\"" + jsonEscape(name) + "\",\"imageUrl\":\"\"}";
+    String location = "http://" + WiFi.localIP().toString() + ":" + String(STATION_PORT) + STATION_PATH + "?data=" + b64UrlEncode(json);
+    String body = "<ContentItem source=\"LOCAL_INTERNET_RADIO\" type=\"stationurl\" location=\"" + xmlEscape(location) +
+        "\" sourceAccount=\"\" isPresetable=\"true\"><itemName>" + xmlEscape(name) + "</itemName></ContentItem>";
+    return httpPost(ip, "/select", body);
+}
+
+// Findet den Lautsprecher zu einem gesprochenen Raumnamen ("bad", "Küche", "Bose Bad" ...).
+static int speakerForRoom(String room) {
+    room.trim();
+    room.toLowerCase();
+    if (room.startsWith("bose ")) room = room.substring(5);
+    if (room.length() == 0) return speakerCount == 1 ? 0 : -1;
+    for (int k = 0; k < speakerCount; k++) {
+        String n = speakers[k].name;
+        n.toLowerCase();
+        String a = speakers[k].alexaName;
+        a.toLowerCase();
+        if (n == room || a == room || a.indexOf(room) >= 0 || n.indexOf(room) >= 0) return k;
+    }
+    return -1;
+}
+
+static void handleSkillCommand(const String& msg) {
+    // Format: befehl|raum|wert|name
+    int p1 = msg.indexOf('|');
+    if (p1 < 0) return;
+    String cmd = msg.substring(0, p1);
+    int p2 = msg.indexOf('|', p1 + 1);
+    String room = p2 > 0 ? msg.substring(p1 + 1, p2) : msg.substring(p1 + 1);
+    String rest = p2 > 0 ? msg.substring(p2 + 1) : "";
+    int k = speakerForRoom(room);
+    skillLastCommand = cmd + " " + room;
+    Serial.println("Skill: " + msg.substring(0, 80));
+    if (k < 0) {
+        skillLastCommand += " (Raum unbekannt)";
+        return;
+    }
+    const IPAddress ip = speakers[k].ip;
+    if (cmd == "play") {
+        int p3 = rest.indexOf('|');
+        String url = p3 >= 0 ? rest.substring(0, p3) : rest;
+        String name = p3 >= 0 ? rest.substring(p3 + 1) : "Radio";
+        if (!url.startsWith("http")) return;
+        bool ok = playStream(ip, name, url);
+        skillLastCommand = name + " im " + speakers[k].name + (ok ? "" : " (Lautsprecher antwortet nicht)");
+    } else if (cmd == "preset") {
+        int n = rest.toInt();
+        if (n < 1 || n > 6) return;
+        if (isStandby(ip)) { pressKey(ip, "POWER"); delay(1500); }
+        pressKey(ip, ("PRESET_" + String(n)).c_str());
+        skillLastCommand = "Senderplatz " + String(n) + " im " + speakers[k].name;
+    } else if (cmd == "off") {
+        if (!isStandby(ip)) pressKey(ip, "POWER");
+        skillLastCommand = speakers[k].name + " aus";
+    } else if (cmd == "on") {
+        if (isStandby(ip)) pressKey(ip, "POWER");
+        skillLastCommand = speakers[k].name + " an";
+    } else if (cmd == "vol") {
+        setVolume(ip, rest.toInt());
+        skillLastCommand = speakers[k].name + " Lautstärke " + String(rest.toInt());
+    }
+}
+
+static void skillConnect() {
+    skillDisconnect();
+    skillClient = new SecureClient();
+    skillClient->setInsecure();  // Inhalt ist nicht geheim; der Kanalname ist das Geheimnis
+#if defined(ESP8266)
+    skillClient->setBufferSizes(16384, 512);
+#endif
+    skillClient->setTimeout(8000);
+    if (!skillClient->connect(SKILL_HOST, 443)) {
+        Serial.println("Skill: Verbindung zu ntfy.sh fehlgeschlagen");
+        skillDisconnect();
+        skillNextTry = millis() + 30000;
+        return;
+    }
+    // since=30s: Befehle, die während eines kurzen Neuaufbaus kamen, nicht verlieren
+    skillClient->print(String("GET /") + skillTopic + "/json?since=30s HTTP/1.1\r\nHost: " + SKILL_HOST +
+                       "\r\nUser-Agent: SoundTouch-Zentrale\r\nConnection: keep-alive\r\n\r\n");
+    skillConnected = true;
+    skillLastData = millis();
+    skillLine = "";
+    Serial.println("Skill: verbunden");
+}
+
+static String seenIds[8];
+static int seenPos = 0;
+
+static void skillProcessLine(const String& line) {
+    if (!line.startsWith("{")) return;  // HTTP-Kopf und Chunk-Längen überspringen
+    if (line.indexOf("\"event\":\"message\"") < 0) return;
+    String id = jsonString(line, "id");
+    for (int i = 0; i < 8; i++) if (seenIds[i] == id) return;  // doppelt nach Neuaufbau
+    seenIds[seenPos] = id;
+    seenPos = (seenPos + 1) % 8;
+    handleSkillCommand(jsonString(line, "message"));
+}
+
+static void skillLoop() {
+    if (!skillEnabled || WiFi.status() != WL_CONNECTED) {
+        if (skillClient) skillDisconnect();
+        return;
+    }
+    if (!skillClient || !skillClient->connected()) {
+        if (skillClient) skillDisconnect();
+        if ((long)(millis() - skillNextTry) >= 0) {
+            skillNextTry = millis() + 15000;
+            skillConnect();
+        }
+        return;
+    }
+    int budget = 512;
+    while (skillClient->available() && budget-- > 0) {
+        char c = (char)skillClient->read();
+        skillLastData = millis();
+        if (c == '\n') {
+            skillLine.trim();
+            skillProcessLine(skillLine);
+            skillLine = "";
+        } else if (skillLine.length() < 1500) {
+            skillLine += c;
+        }
+    }
+    // ntfy schickt alle 45 s ein Lebenszeichen; bleibt es aus, neu verbinden
+    if (millis() - skillLastData > 120000UL) {
+        Serial.println("Skill: keine Daten, verbinde neu");
+        skillDisconnect();
+    }
+}
+
+static void apiSkill() {
+    if (stationServer.hasArg("on")) {
+        skillEnabled = stationServer.arg("on") == "1";
+        if (!skillEnabled) skillDisconnect();
+        skillNextTry = 0;
+        saveSkill();
+    }
+    if (stationServer.arg("newcode") == "1") {
+        skillTopic = randomTopic();
+        skillDisconnect();
+        skillNextTry = 0;
+        saveSkill();
+    }
+    sendJson(200, statusJson());
+}
+
 // ------------------------------------------------------------------ Lautsprecher finden
 
 // Gespeicherte Lautsprecher im Flash: "Name|IP\n..." (nur Raumname und Heimnetz-Adresse).
@@ -348,7 +604,7 @@ static void saveSpeakers() {
     for (int k = 0; k < speakerCount; k++) {
         data += speakers[k].name + "|" + speakers[k].ip.toString() + "|" + speakers[k].alexaName + "\n";
     }
-    for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, i < (int)data.length() ? data[i] : 0);
+    for (int i = 0; i < SPEAKER_AREA; i++) EEPROM.write(i, i < (int)data.length() ? data[i] : 0);
     EEPROM.commit();
 }
 
@@ -427,7 +683,7 @@ static bool removeSpeaker(const String& name) {
 
 static void loadSpeakers() {
     String data;
-    for (int i = 0; i < EEPROM_SIZE; i++) {
+    for (int i = 0; i < SPEAKER_AREA; i++) {
         char c = (char)EEPROM.read(i);
         if (c == 0 || c == (char)0xFF) break;
         data += c;
@@ -554,6 +810,7 @@ void setup() {
     stationServer.on("/api/add", apiAdd);
     stationServer.on("/api/rename", apiRename);
     stationServer.on("/api/remove", apiRemove);
+    stationServer.on("/api/skill", apiSkill);
     stationServer.begin();
     MDNS.addService("stzentrale", "tcp", STATION_PORT);  // damit die App die Zentrale findet
 
@@ -568,6 +825,7 @@ void setup() {
 
     EEPROM.begin(EEPROM_SIZE);
     loadSpeakers();  // bekannte Lautsprecher sofort anmelden
+    loadSkill();
     scanSpeakers(true);
 
     Serial.printf("Bereit mit %d Lautsprecher(n). Jetzt \"Alexa, suche Geräte\" sagen.\n", speakerCount);
@@ -575,6 +833,7 @@ void setup() {
 
 void loop() {
     espalexa.loop();
+    skillLoop();
     stationServer.handleClient();
 #if defined(ESP8266)
     MDNS.update();
