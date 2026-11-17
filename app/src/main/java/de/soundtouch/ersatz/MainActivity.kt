@@ -651,7 +651,7 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
                 )
                 if (error.isNotEmpty()) StatusBanner(Icons.Filled.ErrorOutline, error, ok = false)
                 Text(
-                    "Hinweis: Der SoundTouch 10 nutzt vermutlich nur 2,4 GHz. Das WLAN muss im Router auf 2,4 GHz verfügbar sein.",
+                    "Tipp: Nach der Einrichtung im Router dem Lautsprecher eine feste IP-Adresse geben, dann findet die App ihn immer sofort.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

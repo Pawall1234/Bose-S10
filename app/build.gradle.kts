@@ -12,8 +12,8 @@ android {
         applicationId = "de.soundtouch.ersatz"
         minSdk = 29
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.5.0"
+        versionCode = 8
+        versionName = "0.5.1"
     }
 
     // Fester Signierschlüssel für den privaten Gebrauch. Nur mit immer demselben Schlüssel
