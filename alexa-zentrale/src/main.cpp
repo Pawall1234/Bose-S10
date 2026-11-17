@@ -5,6 +5,7 @@
 //   "Alexa, schalte Küche ein"          -> Lautsprecher einschalten
 //   "Alexa, schalte Küche aus"          -> Lautsprecher in Standby
 //   "Alexa, stelle Küche auf 40 Prozent" -> Lautstärke 40
+//   "Alexa, stelle Küche auf 1 bis 6 Prozent" -> Senderplatz 1-6 (gut für Alexa-Routinen)
 //
 // Ersteinrichtung: Der Chip öffnet das WLAN "SoundTouch-Zentrale". Mit dem Handy verbinden,
 // Heim-WLAN auswählen, Passwort eingeben. Danach "Alexa, suche Geräte".
@@ -44,7 +45,8 @@ struct SpeakerEntry {
 struct PendingCommand {
     volatile bool pending = false;
     bool state = false;
-    unsigned char value = 0;
+    int volume = -1;  // 0-100, -1 = unverändert
+    int preset = 0;   // 1-6 = Senderplatz abspielen
 };
 
 static Espalexa espalexa;
@@ -254,7 +256,7 @@ static void handleForget() {
     ESP.restart();
 }
 
-static const char* FIRMWARE_VERSION = "10";
+static const char* FIRMWARE_VERSION = "11";
 
 static String statusJson() {
     String j = String("{\"version\":\"") + FIRMWARE_VERSION + "\",\"ip\":\"" + WiFi.localIP().toString() +
@@ -323,10 +325,21 @@ static void onAlexa(EspalexaDevice* d) {
     EspalexaDeviceProperty prop = d->getLastChangedProperty();
     bool on = prop != EspalexaDeviceProperty::off && d->getValue() > 0;
     pendingCommands[k].state = on;
-    pendingCommands[k].value = (prop == EspalexaDeviceProperty::bri) ? d->getValue() : 0;
-    pendingCommands[k].pending = true;
+    pendingCommands[k].volume = -1;
+    pendingCommands[k].preset = 0;
     lastAlexa = speakers[k].alexaName + (on ? " an" : " aus");
-    if (prop == EspalexaDeviceProperty::bri) lastAlexa += ", Lautstärke " + String((d->getValue() * 100 + 127) / 255);
+    if (prop == EspalexaDeviceProperty::bri) {
+        // Alexa schickt Prozent als Hue-Helligkeit 1-254 (Espalexa speichert Wert+1).
+        int pct = ((int)(d->getValue() - 1) * 100 + 127) / 254;
+        if (pct >= 1 && pct <= 6) {
+            pendingCommands[k].preset = pct;  // 1-6 Prozent = Senderplatz 1-6
+            lastAlexa += ", Senderplatz " + String(pct);
+        } else {
+            pendingCommands[k].volume = pct;
+            lastAlexa += ", Lautstärke " + String(pct);
+        }
+    }
+    pendingCommands[k].pending = true;
     Serial.println("Alexa: " + lastAlexa);
 }
 
@@ -577,10 +590,11 @@ void loop() {
         if (wantOn && standby) pressKey(ip, "POWER");
         if (!wantOn && !standby) pressKey(ip, "POWER");
 
-        // Alexa schickt bei "auf X Prozent" einen Wert von 1 bis 255.
-        if (wantOn) {
-            int volume = (pendingCommands[k].value * 100 + 127) / 255;
-            if (pendingCommands[k].value > 0) setVolume(ip, volume);
+        if (wantOn && pendingCommands[k].preset > 0) {
+            if (standby) delay(1500);  // Lautsprecher kurz hochfahren lassen
+            pressKey(ip, ("PRESET_" + String(pendingCommands[k].preset)).c_str());
+        } else if (wantOn && pendingCommands[k].volume >= 0) {
+            setVolume(ip, pendingCommands[k].volume);
         }
     }
 
