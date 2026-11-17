@@ -254,7 +254,7 @@ static void handleForget() {
     ESP.restart();
 }
 
-static const char* FIRMWARE_VERSION = "9";
+static const char* FIRMWARE_VERSION = "10";
 
 static String statusJson() {
     String j = String("{\"version\":\"") + FIRMWARE_VERSION + "\",\"ip\":\"" + WiFi.localIP().toString() +
@@ -366,11 +366,11 @@ static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist 
     int k = speakerCount;
     speakers[k].name = name;
     speakers[k].ip = ip;
-    // Standard für Alexa: "Radio" anhängen, damit der Name nicht mit einer Alexa-Gruppe (z. B. "Küche") kollidiert.
-    String alexa = cleanName(rawAlexa);
+        String alexa = cleanName(rawAlexa);
     if (alexa.length() == 0) {
-        alexa = name;
-        if (name.indexOf("adio") < 0) alexa += " Radio";
+        // "Bose" davor: kollidiert nicht mit Alexa-Räumen/-Gruppen, und anders als "Radio"
+        // versteht Alexa es nicht als Wunsch, einen Radiosender abzuspielen.
+        alexa = name.startsWith("Bose") ? name : "Bose " + name;
     }
     speakers[k].alexaName = alexa;
     EspalexaDevice* dev = new EspalexaDevice(speakers[k].alexaName, onAlexa, EspalexaDeviceType::dimmable, 0);
