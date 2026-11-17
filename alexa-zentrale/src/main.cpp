@@ -36,6 +36,7 @@ static const unsigned long RESCAN_INTERVAL_MS = 10UL * 60UL * 1000UL;  // Adress
 
 struct SpeakerEntry {
     String name;
+    String alexaName;
     IPAddress ip;
     int fauxmoId = -1;
 };
@@ -203,7 +204,7 @@ static void handleStatus() {
                   "<title>SoundTouch-Zentrale</title><body style='font-family:sans-serif;padding:16px;max-width:520px'>"
                   "<h2>SoundTouch-Zentrale</h2><p>Lautsprecher für Alexa:</p><ul>";
     for (int k = 0; k < speakerCount; k++) {
-        html += "<li>" + speakers[k].name + " (" + speakers[k].ip.toString() + ")</li>";
+        html += "<li>" + speakers[k].name + " (" + speakers[k].ip.toString() + ") &rarr; Alexa: <b>" + speakers[k].alexaName + "</b></li>";
     }
     if (speakerCount == 0) html += "<li><b>Noch keiner gefunden.</b></li>";
     html += "</ul><p><a href='/scan'>Jetzt suchen</a> (dauert bis zu 1 Minute)</p>"
@@ -274,7 +275,10 @@ static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist 
     if (speakerCount >= MAX_SPEAKERS) return;
     speakers[speakerCount].name = name;
     speakers[speakerCount].ip = ip;
-    speakers[speakerCount].fauxmoId = fauxmo.addDevice(speakers[speakerCount].name.c_str());
+    // Für Alexa "Radio" anhängen, damit der Name nicht mit einer Alexa-Gruppe (z. B. "Küche") kollidiert.
+    speakers[speakerCount].alexaName = name;
+    if (name.indexOf("adio") < 0) speakers[speakerCount].alexaName += " Radio";
+    speakers[speakerCount].fauxmoId = fauxmo.addDevice(speakers[speakerCount].alexaName.c_str());
     speakerCount++;
     Serial.printf("  neu: %s -> %s\n", name.c_str(), ip.toString().c_str());
     if (persist) saveSpeakers();
