@@ -3,6 +3,7 @@ name: APK bauen
 on:
   push:
     branches: [main]
+    paths-ignore: ["alexa-zentrale/**", ".github/workflows/zentrale.yml"]
   pull_request:
   workflow_dispatch:
 
