@@ -87,7 +87,13 @@ class HotspotConnector(context: Context) {
         return dhcp ?: lp?.routes?.firstOrNull { it.hasGateway() }?.gateway?.hostAddress ?: "192.0.2.1"
     }
 
+    /** Leitet die ganze App (auch die WebView) über das Einrichtungs-WLAN. */
+    fun bindProcess(network: Network) {
+        cm.bindProcessToNetwork(network)
+    }
+
     fun release() {
+        cm.bindProcessToNetwork(null)
         callback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
         callback = null
     }

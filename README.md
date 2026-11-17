@@ -24,6 +24,15 @@ Kein Konto, keine Cloud, keine Telemetrie. Die App spricht nur mit den Lautsprec
 4. Heim-WLAN auswählen, Passwort eingeben, **WLAN-Daten senden**. Das Passwort geht nur an den Lautsprecher und wird nicht gespeichert.
 5. Nach etwa 30 Sekunden ist der Lautsprecher im Heim-WLAN. Für den zweiten Lautsprecher wiederholen.
 
+Klappt das Senden nicht, gibt es im Assistenten den Knopf **Einrichtungsseite des Lautsprechers öffnen**. Das ist die im Lautsprecher eingebaute Web-Einrichtung (http://192.0.2.1), die als Ausweichweg der Original-App gedacht war.
+
+### Wie die Original-App das gemacht hat
+
+- Beim SoundTouch 10 nutzte die Bose-App bevorzugt **Bluetooth Low Energy** (internes „Gabbo“-Protokoll), um WLAN-Name und Passwort zu übertragen. Dieses Protokoll ist nicht öffentlich dokumentiert.
+- Ausweichweg war der **Access-Point-Modus**: Der Lautsprecher öffnet das offene WLAN „Bose SoundTouch …“, hat dort die Adresse `192.0.2.1` und gibt dem Handy `192.0.2.2`. Auf Port 80 läuft eine Einrichtungsseite, auf Port 8090 die normale API.
+- Ablauf: `GET /info` (erreichbar?), optional `POST /performWirelessSiteSurvey`, dann `POST /addWirelessProfile` mit `securityType="wpa_or_wpa2"`. Der erste Versuch hängt oft, ein zweiter kurz danach klappt. Danach verlässt der Lautsprecher den Setup-Modus und ist nach 15–30 s im Heim-WLAN.
+- Danach hat die Original-App den Lautsprecher mit dem Bose-Konto verknüpft. Dieser Schritt entfällt, weil die Bose-Cloud abgeschaltet ist.
+
 Falls nichts hilft: Werksreset mit den Tasten **1** und **Lautstärke −** (ca. 10 Sekunden halten).
 
 ## Technik

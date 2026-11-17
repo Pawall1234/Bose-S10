@@ -61,6 +61,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.viewinterop.AndroidView
+import android.net.Network
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -210,7 +214,7 @@ private fun HomeScreen(
 
 // ---------------------------------------------------------------- WLAN-Einrichtung
 
-private enum class SetupStep { Intro, Connecting, Credentials, Sending, Searching, Done, Failed }
+private enum class SetupStep { Intro, Connecting, Credentials, WebSetup, Sending, Searching, Done, Failed }
 
 @Composable
 private fun SetupScreen(onDone: (Speaker?) -> Unit) {
@@ -229,6 +233,7 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
     var error by remember { mutableStateOf("") }
     var result by remember { mutableStateOf<Speaker?>(null) }
     var showPassword by remember { mutableStateOf(false) }
+    var setupNetwork by remember { mutableStateOf<Network?>(null) }
     val clipboard = LocalClipboardManager.current
 
     val permissions = if (Build.VERSION.SDK_INT >= 33) {
@@ -255,10 +260,39 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
                 return@launch
             }
             api = a
+            setupNetwork = network
             deviceType = info.type
             networks = runCatching { a.wirelessSiteSurvey() }.getOrDefault(emptyList())
             step = SetupStep.Credentials
         }
+    }
+
+    suspend fun searchAfterSetup() {
+        password = ""
+        connector.release()
+        setupNetwork = null
+        step = SetupStep.Searching
+        delay(25_000)
+        val wanted = speakerName.trim()
+        var found: Speaker? = null
+        repeat(4) {
+            if (found == null) {
+                val list = runCatching { SpeakerDiscovery(context).discover() }.getOrDefault(emptyList())
+                found = list.firstOrNull { wanted.isNotBlank() && it.name.equals(wanted, ignoreCase = true) }
+                    ?: list.singleOrNull()
+            }
+        }
+        val r = found?.let { Speaker(wanted.ifBlank { it.name }, it.host) }
+        result = r
+        // Namen erst im Heimnetz setzen, damit die Einrichtung nicht gestört wird.
+        if (r != null && wanted.isNotBlank()) runCatching { SoundTouchApi(r.host).setName(wanted) }
+        step = SetupStep.Done
+    }
+
+    fun openWebSetup() {
+        val n = setupNetwork ?: return
+        connector.bindProcess(n)
+        step = SetupStep.WebSetup
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -337,26 +371,35 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
                                     return@launch
                                 }
                             }
-                            password = ""
-                            connector.release()
-                            step = SetupStep.Searching
-                            delay(25_000)
-                            val wanted = speakerName.trim()
-                            var found: Speaker? = null
-                            repeat(4) {
-                                if (found == null) {
-                                    val list = runCatching { SpeakerDiscovery(context).discover() }.getOrDefault(emptyList())
-                                    found = list.firstOrNull { wanted.isNotBlank() && it.name.equals(wanted, ignoreCase = true) }
-                                        ?: list.singleOrNull()
-                                }
-                            }
-                            result = found?.let { Speaker(wanted.ifBlank { it.name }, it.host) }
-                            // Namen erst im Heimnetz setzen, damit die Einrichtung nicht gestört wird.
-                            result?.let { r -> if (wanted.isNotBlank()) runCatching { SoundTouchApi(r.host).setName(wanted) } }
-                            step = SetupStep.Done
+                            searchAfterSetup()
                         }
                     },
                 ) { Text("WLAN-Daten senden") }
+                OutlinedButton(onClick = { openWebSetup() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Stattdessen Einrichtungsseite des Lautsprechers öffnen")
+                }
+            }
+
+            SetupStep.WebSetup -> {
+                Text("Das ist die eingebaute Einrichtungsseite des Lautsprechers. Trage dort dein Heim-WLAN ein und schicke es ab. Tippe danach unten auf „Fertig“.")
+                AndroidView(
+                    factory = { ctx ->
+                        WebView(ctx).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            webViewClient = WebViewClient()
+                            loadUrl("http://" + (setupNetwork?.let { connector.speakerAddress(it) } ?: "192.0.2.1") + "/")
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(520.dp),
+                )
+                Button(
+                    onClick = { scope.launch { searchAfterSetup() } },
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                ) { Text("Fertig, Lautsprecher im Heimnetz suchen") }
+                TextButton(onClick = { step = SetupStep.Credentials }) {
+                    Text("Zurück")
+                }
             }
 
             SetupStep.Sending -> Busy("Sende WLAN-Daten …")
@@ -376,6 +419,11 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
             SetupStep.Failed -> {
                 Text(error)
                 Button(onClick = { step = SetupStep.Intro }, modifier = Modifier.fillMaxWidth()) { Text("Noch einmal") }
+                if (setupNetwork != null) {
+                    OutlinedButton(onClick = { openWebSetup() }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Einrichtungsseite des Lautsprechers öffnen")
+                    }
+                }
                 TextButton(onClick = { onDone(null) }) { Text("Abbrechen") }
             }
         }
