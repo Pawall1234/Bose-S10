@@ -255,7 +255,14 @@ void setup() {
     Serial.println("\nSoundTouch-Zentrale startet");
 
     WiFi.mode(WIFI_STA);
+    // Name, unter dem die Zentrale im Router erscheint
+#if defined(ESP8266)
+    WiFi.hostname("soundtouch-zentrale");
+#else
+    WiFi.setHostname("soundtouch-zentrale");
+#endif
     WiFiManager wm;
+    wm.setHostname("soundtouch-zentrale");
     wm.setTitle("SoundTouch-Zentrale");
     wm.setConfigPortalTimeout(600);
     if (!wm.autoConnect("SoundTouch-Zentrale")) {
