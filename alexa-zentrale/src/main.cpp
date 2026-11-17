@@ -21,6 +21,7 @@
 #include <HTTPClient.h>
 #endif
 #include <WiFiManager.h>
+#include <EEPROM.h>
 #include <fauxmoESP.h>
 #if defined(ESP8266)
 #include <ESP8266WebServer.h>
@@ -57,6 +58,9 @@ static SpeakerEntry speakers[MAX_SPEAKERS];
 static PendingCommand pendingCommands[MAX_SPEAKERS];
 static int speakerCount = 0;
 static unsigned long lastScan = 0;
+static volatile bool scanRequested = false;
+static const unsigned long EMPTY_RESCAN_MS = 2UL * 60UL * 1000UL;  // solange nichts gefunden: alle 2 Minuten
+static const int EEPROM_SIZE = 512;
 
 // ------------------------------------------------------------------ SoundTouch-API
 
@@ -196,47 +200,158 @@ static void handleStation() {
 
 static void handleStatus() {
     String html = "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
-                  "<title>SoundTouch-Zentrale</title><body style='font-family:sans-serif;padding:16px'>"
-                  "<h2>SoundTouch-Zentrale</h2><p>Gefundene Lautsprecher:</p><ul>";
+                  "<title>SoundTouch-Zentrale</title><body style='font-family:sans-serif;padding:16px;max-width:520px'>"
+                  "<h2>SoundTouch-Zentrale</h2><p>Lautsprecher für Alexa:</p><ul>";
     for (int k = 0; k < speakerCount; k++) {
         html += "<li>" + speakers[k].name + " (" + speakers[k].ip.toString() + ")</li>";
     }
-    html += "</ul></body>";
+    if (speakerCount == 0) html += "<li><b>Noch keiner gefunden.</b></li>";
+    html += "</ul><p><a href='/scan'>Jetzt suchen</a> (dauert bis zu 1 Minute)</p>"
+            "<h3>Von Hand hinzufügen</h3><form action='/add'>"
+            "<p>Name für Alexa<br><input name=name placeholder='Küche'></p>"
+            "<p>IP-Adresse<br><input name=ip placeholder='192.168.178.xx'></p>"
+            "<p><button>Hinzufügen</button></p></form>"
+            "<p><a href='/forget' onclick=\"return confirm('Alle Lautsprecher vergessen und neu starten?')\">Liste leeren</a></p>"
+            "<p style='color:#666'>Nach einer Änderung: \"Alexa, suche Geräte\".</p></body>";
     stationServer.send(200, "text/html; charset=utf-8", html);
+}
+
+static void redirectHome() {
+    stationServer.sendHeader("Location", "/");
+    stationServer.send(303, "text/plain", "");
+}
+
+static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist);
+
+static void handleAdd() {
+    IPAddress ip;
+    String name = stationServer.arg("name");
+    if (!ip.fromString(stationServer.arg("ip")) || name.length() == 0) {
+        stationServer.send(400, "text/plain; charset=utf-8", "Bitte Name und gültige IP angeben.");
+        return;
+    }
+    addSpeaker(name, ip, true);
+    redirectHome();
+}
+
+static void handleScan() {
+    scanRequested = true;
+    redirectHome();
+}
+
+static void handleForget() {
+    for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, 0);
+    EEPROM.commit();
+    stationServer.send(200, "text/plain; charset=utf-8", "Gelöscht, Neustart ...");
+    delay(500);
+    ESP.restart();
 }
 
 // ------------------------------------------------------------------ Lautsprecher finden
 
-// Sucht SoundTouch-Lautsprecher per mDNS und fragt ihren Namen ab.
-// Bekannte Lautsprecher (gleicher Name) bekommen ihre neue Adresse; neue werden ergänzt.
-static void scanSpeakers(bool allowNew) {
+// Gespeicherte Lautsprecher im Flash: "Name|IP\n..." (nur Raumname und Heimnetz-Adresse).
+static void saveSpeakers() {
+    String data = "ST1\n";
+    for (int k = 0; k < speakerCount; k++) data += speakers[k].name + "|" + speakers[k].ip.toString() + "\n";
+    for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, i < (int)data.length() ? data[i] : 0);
+    EEPROM.commit();
+}
+
+static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist = true) {
+    String name = rawName;
+    name.trim();
+    name.replace("|", " ");
+    if (name.length() == 0) return;
+    for (int k = 0; k < speakerCount; k++) {
+        if (speakers[k].name.equalsIgnoreCase(name)) {
+            if (speakers[k].ip != ip) {
+                speakers[k].ip = ip;
+                if (persist) saveSpeakers();
+            }
+            return;
+        }
+    }
+    if (speakerCount >= MAX_SPEAKERS) return;
+    speakers[speakerCount].name = name;
+    speakers[speakerCount].ip = ip;
+    speakers[speakerCount].fauxmoId = fauxmo.addDevice(speakers[speakerCount].name.c_str());
+    speakerCount++;
+    Serial.printf("  neu: %s -> %s\n", name.c_str(), ip.toString().c_str());
+    if (persist) saveSpeakers();
+}
+
+static void loadSpeakers() {
+    String data;
+    for (int i = 0; i < EEPROM_SIZE; i++) {
+        char c = (char)EEPROM.read(i);
+        if (c == 0 || c == (char)0xFF) break;
+        data += c;
+    }
+    if (!data.startsWith("ST1\n")) return;
+    int pos = 4;
+    while (pos < (int)data.length()) {
+        int nl = data.indexOf('\n', pos);
+        if (nl < 0) nl = data.length();
+        String line = data.substring(pos, nl);
+        int bar = line.indexOf('|');
+        IPAddress ip;
+        if (bar > 0 && ip.fromString(line.substring(bar + 1))) addSpeaker(line.substring(0, bar), ip, false);
+        pos = nl + 1;
+    }
+    Serial.printf("%d Lautsprecher aus dem Speicher geladen\n", speakerCount);
+}
+
+// Fragt eine Adresse nach /info und übernimmt den Lautsprecher, wenn er antwortet.
+static bool probeSpeaker(const IPAddress& ip) {
+    String info = httpGet(ip, "/info");
+    if (info.indexOf("<info") < 0) return false;
+    addSpeaker(xmlUnescape(xmlText(info, "name")), ip);
+    return true;
+}
+
+// Sucht SoundTouch-Lautsprecher per mDNS.
+static int scanMdns() {
     int n = MDNS.queryService("soundtouch", "tcp");
     Serial.printf("mDNS: %d SoundTouch gefunden\n", n);
+    int ok = 0;
     for (int i = 0; i < n; i++) {
-#if defined(ESP8266)
-        IPAddress ip = MDNS.IP(i);
-#else
-        IPAddress ip = MDNS.IP(i);
-#endif
-        String info = httpGet(ip, "/info");
-        String name = xmlUnescape(xmlText(info, "name"));
-        if (name.length() == 0) name = MDNS.hostname(i);
-        name.trim();
-        if (name.length() == 0) continue;
-
-        int idx = -1;
-        for (int k = 0; k < speakerCount; k++) {
-            if (speakers[k].name.equalsIgnoreCase(name)) { idx = k; break; }
-        }
-        if (idx >= 0) {
-            speakers[idx].ip = ip;
-        } else if (allowNew && speakerCount < MAX_SPEAKERS) {
-            speakers[speakerCount].name = name;
-            speakers[speakerCount].ip = ip;
-            speakerCount++;
-        }
-        Serial.printf("  %s -> %s\n", name.c_str(), ip.toString().c_str());
+        if (probeSpeaker(MDNS.IP(i))) ok++;
     }
+    return ok;
+}
+
+// Ausweichweg, falls mDNS nichts liefert: alle Adressen im eigenen Netz kurz auf Port 8090 prüfen.
+static int scanSubnet() {
+    IPAddress self = WiFi.localIP();
+    IPAddress mask = WiFi.subnetMask();
+    if (mask[0] != 255 || mask[1] != 255 || mask[2] != 255) {
+        Serial.println("Netz größer als /24, Netzsuche übersprungen");
+        return 0;
+    }
+    Serial.println("Netzsuche auf Port 8090 ...");
+    int ok = 0;
+    for (int host = 1; host < 255; host++) {
+        IPAddress ip(self[0], self[1], self[2], host);
+        if (ip == self) continue;
+        WiFiClient c;
+#if defined(ESP8266)
+        c.setTimeout(150);
+        bool open = c.connect(ip, 8090);
+#else
+        bool open = c.connect(ip, 8090, 150);
+#endif
+        c.stop();
+        if (open && probeSpeaker(ip)) ok++;
+        fauxmo.handle();
+        yield();
+    }
+    Serial.printf("Netzsuche fertig, %d Lautsprecher\n", ok);
+    return ok;
+}
+
+static void scanSpeakers(bool full) {
+    int found = scanMdns();
+    if (found == 0 && (full || speakerCount == 0)) scanSubnet();
     lastScan = millis();
 }
 
@@ -280,21 +395,20 @@ void setup() {
 
     stationServer.on(STATION_PATH, handleStation);
     stationServer.on("/", handleStatus);
+    stationServer.on("/add", handleAdd);
+    stationServer.on("/scan", handleScan);
+    stationServer.on("/forget", handleForget);
     stationServer.begin();
     MDNS.addService("stzentrale", "tcp", STATION_PORT);  // damit die App die Zentrale findet
 
-    // Bis zu einer Minute nach Lautsprechern suchen
-    for (int attempt = 0; attempt < 6 && speakerCount == 0; attempt++) {
-        scanSpeakers(true);
-        if (speakerCount == 0) delay(10000);
-    }
-
+    // Hue-Emulation zuerst starten, damit Alexa die Zentrale immer findet.
     fauxmo.createServer(true);
     fauxmo.setPort(80);  // Pflicht für neuere Echo-Geräte
     fauxmo.enable(true);
-    for (int k = 0; k < speakerCount; k++) {
-        speakers[k].fauxmoId = fauxmo.addDevice(speakers[k].name.c_str());
-    }
+
+    EEPROM.begin(EEPROM_SIZE);
+    loadSpeakers();  // bekannte Lautsprecher sofort anmelden
+    scanSpeakers(true);
 
     // Wird im Netzwerk-Kontext aufgerufen: nur merken, die Arbeit passiert in loop().
     fauxmo.onSetState([](unsigned char deviceId, const char* deviceName, bool state, unsigned char value) {
@@ -333,8 +447,11 @@ void loop() {
         }
     }
 
-    if (millis() - lastScan > RESCAN_INTERVAL_MS) {
-        scanSpeakers(false);
+    unsigned long interval = speakerCount == 0 ? EMPTY_RESCAN_MS : RESCAN_INTERVAL_MS;
+    if (scanRequested || millis() - lastScan > interval) {
+        bool full = scanRequested;
+        scanRequested = false;
+        scanSpeakers(full);
     }
 
     if (WiFi.status() != WL_CONNECTED) {
