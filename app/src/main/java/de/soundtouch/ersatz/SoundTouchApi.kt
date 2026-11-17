@@ -28,8 +28,8 @@ data class NowPlaying(
  */
 class SoundTouchApi(private val host: String, private val network: Network? = null) {
 
-    private fun open(path: String, readTimeoutMs: Int = 10000): HttpURLConnection {
-        val url = URL("http://$host:8090$path")
+    private fun open(path: String, readTimeoutMs: Int = 10000, port: Int = 8090): HttpURLConnection {
+        val url = URL("http://$host:$port$path")
         val conn = (network?.openConnection(url) ?: url.openConnection()) as HttpURLConnection
         conn.connectTimeout = 5000
         conn.readTimeout = readTimeoutMs
@@ -106,6 +106,38 @@ class SoundTouchApi(private val host: String, private val network: Network? = nu
     suspend fun wirelessSiteSurvey(): List<String> {
         val xml = post("/performWirelessSiteSurvey", "<PerformWirelessSiteSurvey timeout=\"5\"/>")
         return Xml.allAttrs(xml, "ssid").filter { it.isNotBlank() }.distinct()
+    }
+
+    /**
+     * WLAN-Daten über die eingebaute Einrichtungsseite (Port 80) übergeben, genau wie das
+     * Formular unter http://192.0.2.1 es tut. Bei Lautsprechern mit WLAN-Coprozessor
+     * (z. B. SoundTouch 10/30) ist das der Weg, der das Funkmodul wirklich programmiert;
+     * /addWirelessProfile antwortet dort oft mit HTTP 500.
+     * Gibt true zurück, wenn der Lautsprecher "successfully applied" meldet.
+     */
+    suspend fun configureWifiViaWebForm(ssid: String, password: String): Boolean = withContext(Dispatchers.IO) {
+        val path = "/goform/aformHandlerConfigureProfileSettings"
+        fun enc(v: String) = java.net.URLEncoder.encode(v, "UTF-8").replace("+", "%20")
+        val secure = password.isNotEmpty()
+        val body = "ConfigManual=1&SSID=${enc(ssid)}&Passphrase=${if (secure) enc(password) else ""}&Key0=" +
+            "&Security=${if (secure) "WPA2PSK" else ""}&Cipher=${if (secure) "CCMP" else ""}" +
+            "&DHCPClient=1&IP=&Mask=&DefGW=&DNSSrv1=&DNSSrv2=&ProxyServer=&ProxyServerPort="
+        val conn = open(path, readTimeoutMs = 25000, port = 80)
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            conn.setRequestProperty("Referer", "http://$host/")
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            val text = runCatching {
+                (if (code in 200..399) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            }.getOrDefault("")
+            if (code !in 200..399) throw IOException("HTTP $code bei der Einrichtungsseite")
+            text.contains("successfully applied", ignoreCase = true) || text.contains("EndRes")
+        } finally {
+            conn.disconnect()
+        }
     }
 
     /**

@@ -359,7 +359,17 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
                             step = SetupStep.Sending
                             error = ""
                             val a = api ?: return@launch
-                            val sent = runCatching { a.addWirelessProfile(ssid.trim(), password) }
+                            // 1. Weg der eingebauten Einrichtungsseite (Port 80), 2. API /addWirelessProfile.
+                            val viaForm = runCatching { a.configureWifiViaWebForm(ssid.trim(), password) }
+                            val sent = if (viaForm.getOrDefault(false)) {
+                                Result.success(Unit)
+                            } else {
+                                runCatching { a.addWirelessProfile(ssid.trim(), password) }.let { api ->
+                                    if (api.isFailure && viaForm.isFailure) {
+                                        Result.failure(Exception("Formular: ${viaForm.exceptionOrNull()?.message}; API: ${api.exceptionOrNull()?.message}"))
+                                    } else api
+                                }
+                            }
                             if (sent.isFailure) {
                                 // Manchmal antwortet der Lautsprecher nicht mehr, weil er schon ins Heim-WLAN wechselt.
                                 // Ist er noch im Einrichtungs-WLAN erreichbar, hat er die Daten wirklich nicht angenommen.
