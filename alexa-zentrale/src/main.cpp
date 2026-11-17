@@ -60,6 +60,7 @@ static PendingCommand pendingCommands[MAX_SPEAKERS];
 static int speakerCount = 0;
 static unsigned long lastScan = 0;
 static volatile bool scanRequested = false;
+static String lastAlexa = "noch keiner";
 static const unsigned long EMPTY_RESCAN_MS = 2UL * 60UL * 1000UL;  // solange nichts gefunden: alle 2 Minuten
 static const int EEPROM_SIZE = 512;
 
@@ -207,7 +208,7 @@ static void handleStatus() {
         html += "<li>" + speakers[k].name + " (" + speakers[k].ip.toString() + ") &rarr; Alexa: <b>" + speakers[k].alexaName + "</b></li>";
     }
     if (speakerCount == 0) html += "<li><b>Noch keiner gefunden.</b></li>";
-    html += "</ul><p><a href='/scan'>Jetzt suchen</a> (dauert bis zu 1 Minute)</p>"
+    html += "</ul><p>Letzter Alexa-Befehl: " + lastAlexa + "</p><p><a href='/scan'>Jetzt suchen</a> (dauert bis zu 1 Minute)</p>"
             "<h3>Von Hand hinzufügen</h3><form action='/add'>"
             "<p>Name für Alexa<br><input name=name placeholder='Küche'></p>"
             "<p>IP-Adresse<br><input name=ip placeholder='192.168.178.xx'></p>"
@@ -279,6 +280,18 @@ static void addSpeaker(const String& rawName, const IPAddress& ip, bool persist 
     speakers[speakerCount].alexaName = name;
     if (name.indexOf("adio") < 0) speakers[speakerCount].alexaName += " Radio";
     speakers[speakerCount].fauxmoId = fauxmo.addDevice(speakers[speakerCount].alexaName.c_str());
+    // Eigene Geräte-Kennung aus dem Namen ableiten. Die Standard-Kennung hängt nur an der Reihenfolge,
+    // dann hält Alexa einen umbenannten Lautsprecher für ein schon bekanntes Gerät und zeigt ihn nicht neu an.
+    {
+        uint32_t h = 2166136261u;
+        for (size_t i = 0; i < speakers[speakerCount].alexaName.length(); i++) {
+            h = (h ^ (uint8_t)speakers[speakerCount].alexaName[i]) * 16777619u;
+        }
+        char uid[32];
+        snprintf(uid, sizeof(uid), "%02X:%s:%02X:%02X", (unsigned)(h & 0xFF), WiFi.macAddress().c_str(),
+                 (unsigned)((h >> 8) & 0xFF), (unsigned)((h >> 16) & 0xFF));
+        fauxmo.setDeviceUniqueId(speakers[speakerCount].fauxmoId, uid);
+    }
     speakerCount++;
     Serial.printf("  neu: %s -> %s\n", name.c_str(), ip.toString().c_str());
     if (persist) saveSpeakers();
@@ -422,6 +435,7 @@ void setup() {
         pendingCommands[k].value = value;
         pendingCommands[k].pending = true;
         Serial.printf("Alexa: %s %s, Wert %d\n", deviceName, state ? "an" : "aus", value);
+        lastAlexa = String(deviceName) + (state ? " an" : " aus") + ", Wert " + String(value);
     });
 
     Serial.printf("Bereit mit %d Lautsprecher(n). Jetzt \"Alexa, suche Geräte\" sagen.\n", speakerCount);
