@@ -249,7 +249,7 @@ private fun HomeScreen(
     var manualName by remember { mutableStateOf("") }
 
     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        ScreenHeader(greeting(), if (speakers.isEmpty()) "Lass uns deine Lautsprecher einrichten." else "Deine Räume")
+        ScreenHeader("SoundTouch", if (speakers.isEmpty()) "${greeting()}! Lass uns deine Lautsprecher einrichten." else "${greeting()}. Deine Räume")
 
         if (speakers.isEmpty()) {
             Card(
@@ -581,7 +581,7 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
                 Text("Welcher Raum?", style = MaterialTheme.typography.titleMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("Küche", "Bad", "Wohnzimmer").forEach { r ->
-                        FilterChip(selected = speakerName == r, onClick = { speakerName = r }, label = { Text(r) })
+                        FilterChip(selected = speakerName == r, onClick = { speakerName = r }, label = { Text(r) }, shape = CircleShape)
                     }
                 }
                 OutlinedTextField(
@@ -645,6 +645,7 @@ private fun SetupScreen(onDone: (Speaker?) -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                 )
                 AssistChip(
+                    shape = CircleShape,
                     onClick = { clipboard.getText()?.text?.trim()?.let { if (it.isNotEmpty()) password = it } },
                     label = { Text("Passwort einfügen") },
                     leadingIcon = { Icon(Icons.Filled.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp)) },
@@ -815,7 +816,7 @@ private fun ControlScreen(speaker: Speaker, onBack: () -> Unit, onRediscover: ()
                 .clip(MaterialTheme.shapes.extraLarge)
                 .background(
                     Brush.linearGradient(
-                        listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary),
+                        listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary),
                     ),
                 )
                 .padding(28.dp),
@@ -933,22 +934,20 @@ private fun ControlScreen(speaker: Speaker, onBack: () -> Unit, onRediscover: ()
 
 @Composable
 private fun SourceTile(icon: ImageVector, label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Card(
-        onClick = onClick,
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-        ),
-        modifier = modifier,
-    ) {
-        Column(
-            Modifier.fillMaxWidth().padding(vertical = 18.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilledIconButton(
+            onClick = onClick,
+            shape = CircleShape,
+            colors = if (selected) IconButtonDefaults.filledIconButtonColors()
+            else IconButtonDefaults.filledIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            ),
+            modifier = Modifier.size(72.dp),
         ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(28.dp))
-            Text(label, style = MaterialTheme.typography.labelLarge)
+            Icon(icon, contentDescription = label, modifier = Modifier.size(30.dp))
         }
+        Text(label, style = MaterialTheme.typography.labelLarge)
     }
 }
 
