@@ -53,10 +53,26 @@ async function findStation(name) {
             console.log(`${server} nicht erreichbar: ${e.message}`);
         }
     }
-    if (!list) throw new Error('Senderverzeichnis nicht erreichbar');
-    if (!list.length) return null;
+    if (!list || !list.length) return findStationTuneIn(name);
     const pick = list.find((s) => (s.url_resolved || '').startsWith('http://')) || list[0];
     return { name: (pick.name || name).trim().slice(0, 60), url: pick.url_resolved || pick.url };
+}
+
+/** Ausweichweg: TuneIn-Verzeichnis (frei abrufbar, ohne Konto), wie beim früheren Bose-Skill. */
+async function findStationTuneIn(name) {
+    try {
+        const search = JSON.parse(await request('GET',
+            'https://opml.radiotime.com/Search.ashx?render=json&types=station&query=' + encodeURIComponent(name)));
+        const item = (search.body || []).find((b) => b.item === 'station' && b.URL);
+        if (!item) return null;
+        const tune = JSON.parse(await request('GET', item.URL.replace('http://', 'https://') + '&render=json'));
+        const streams = (tune.body || []).map((b) => b.url).filter(Boolean);
+        const url = streams.find((u) => u.startsWith('http://')) || streams[0];
+        return url ? { name: (item.text || name).trim().slice(0, 60), url } : null;
+    } catch (e) {
+        console.log('TuneIn nicht erreichbar: ' + e.message);
+        return null;
+    }
 }
 
 function slot(handlerInput, name) {
